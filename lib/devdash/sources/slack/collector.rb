@@ -35,6 +35,7 @@ module Devdash
           observed_at = @clock.call
           batch = begin
             users = @client.each_user.to_a
+            page_count = client_page_count(default: 1)
             users_with_timestamps = users.map { |user| [user, updated_at_for(user)] }
             source_updated_at = users_with_timestamps.map(&:last).max
             cursor_after = source_updated_at ? source_updated_at.iso8601 : observed_at.iso8601
@@ -46,10 +47,10 @@ module Devdash
             Ingestion::Batch.new(source: SOURCE, scope_key: SCOPE_KEY, cursor_type: CURSOR_TYPE,
               cursor_before: cursor_before, cursor_after: cursor_after, observations: observations,
               coverages: [{ scope_type: "global", scope_key: SCOPE_KEY, entity_type: "user", status: "complete",
-                            achieved_start_at: source_updated_at, achieved_end_at: observed_at }], page_count: 1, retry_count: 0)
+                            achieved_start_at: source_updated_at, achieved_end_at: observed_at }], page_count: page_count, retry_count: 0)
           rescue StandardError => error
             @writer.record_failure(source: SOURCE, scope_key: SCOPE_KEY, cursor_before: cursor_before,
-              started_at: observed_at, error: error)
+              started_at: observed_at, error: error, page_count: client_page_count(default: 0))
             raise
           end
 
@@ -64,6 +65,13 @@ module Devdash
 
           raise ArgumentError,
             "Slack user #{user["id"] || "unknown"} has missing or non-integer updated timestamp"
+        end
+
+        def client_page_count(default:)
+          return default unless @client.respond_to?(:page_count)
+
+          count = @client.page_count
+          count.is_a?(Integer) && count >= 0 ? count : default
         end
       end
     end

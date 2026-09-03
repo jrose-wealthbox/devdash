@@ -15,8 +15,20 @@ RSpec.describe Devdash::Sources::Slack::Client do
       .and_return(instance_double(Devdash::Transports::HttpJson::Response, body: page_two))
 
     expect(client.each_user.map { |user| user.fetch("id") }).to eq(%w[U001 U002 U003 U004 U005 U006])
+    expect(client.page_count).to eq(2)
     expect(transport).to have_received(:get).twice
     expect(transport).not_to have_received(:get).with(hash_including(path: a_string_matching(/conversations|history/)))
+  end
+
+  it "resets the page count for each enumeration" do
+    response = instance_double(Devdash::Transports::HttpJson::Response,
+      body: { "ok" => true, "members" => [{ "id" => "U001" }] })
+    allow(transport).to receive(:get).with(path: "/api/users.list", query: { "limit" => "200" }, headers: { "Authorization" => "Bearer slack-secret" })
+      .and_return(response)
+
+    2.times { client.each_user.to_a }
+
+    expect(client.page_count).to eq(1)
   end
 
   it "strips nonblank cursors and stops on whitespace-only cursors" do
@@ -38,5 +50,23 @@ RSpec.describe Devdash::Sources::Slack::Client do
       body: { "ok" => false, "error" => "invalid_auth" }))
 
     expect { client.each_user.to_a }.to raise_error(Devdash::Transports::AuthenticationError)
+  end
+
+  it "rejects successful responses with missing or malformed members" do
+    malformed_bodies = [
+      { "ok" => true },
+      { "ok" => true, "members" => {} },
+      { "ok" => true, "members" => [nil] },
+      { "ok" => true, "members" => [{ "id" => "" }] },
+      { "ok" => true, "members" => [{ "id" => 123 }] }
+    ]
+
+    malformed_bodies.each do |body|
+      allow(transport).to receive(:get).with(path: "/api/users.list", query: { "limit" => "200" }, headers: { "Authorization" => "Bearer slack-secret" })
+        .and_return(instance_double(Devdash::Transports::HttpJson::Response, body: body))
+
+      expect { client.each_user.to_a }
+        .to raise_error(Devdash::Transports::ResponseError, /malformed members/)
+    end
   end
 end
