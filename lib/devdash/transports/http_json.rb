@@ -12,13 +12,16 @@ module Devdash
       RETRYABLE_STATUSES = [429, 502, 503, 504].freeze
       MAX_RETRY_AFTER = 300.0
 
-      def initialize(base_uri:, default_headers: {}, open_timeout: 10, read_timeout: 30, max_retries: 3, sleeper: Kernel.method(:sleep))
+      def initialize(base_uri:, default_headers: {}, open_timeout: 10, read_timeout: 30, max_retries: 3, sleeper: Kernel.method(:sleep), graphql_path: "/graphql")
         @base_uri = URI(base_uri)
+        raise ResponseError, "HTTP base URI must include a scheme and host" unless @base_uri.scheme && @base_uri.host
+
         @default_headers = default_headers.transform_keys(&:to_s)
         @open_timeout = open_timeout
         @read_timeout = read_timeout
         @max_retries = max_retries
         @sleeper = sleeper
+        @graphql_path = normalize_graphql_path(graphql_path)
       end
 
       def get(path:, query:, headers: {})
@@ -32,7 +35,7 @@ module Devdash
       private
 
       def request(method, path, query, headers, body = nil)
-        reject_graphql_mutation!(body) if method == :POST
+        validate_post!(path, body) if method == :POST
         attempts = 0
         loop do
           begin
@@ -60,7 +63,7 @@ module Devdash
       end
 
       def perform(method, path, query, headers, body)
-        uri = @base_uri + path.to_s
+        uri = resolve_uri(path)
         uri.query = URI.encode_www_form(query || {}) unless query.nil? || query.empty?
         request = Net::HTTP.const_get(method.to_s.capitalize).new(uri)
         (@default_headers.merge(headers.transform_keys(&:to_s))).each { |key, value| request[key] = value }
@@ -87,10 +90,49 @@ module Devdash
       end
 
       def reject_graphql_mutation!(body)
-        query = body.is_a?(Hash) ? (body["query"] || body[:query]) : body
-        return unless query.to_s.match?(/\A\s*mutation\b/i)
+        query = body["query"] || body[:query]
+        unless query.is_a?(String) && query.match?(/\A\s*(?:query(?:\s|\{|\()|\{)/i)
+          raise ResponseError, "read-only GraphQL query body is required"
+        end
+
+        return unless query.match?(/\bmutation\b/i)
 
         raise ResponseError, "read-only HTTP transport rejects GraphQL mutation operations"
+      end
+
+      def validate_post!(path, body)
+        uri = resolve_uri(path)
+        raise ResponseError, "HTTP POST is restricted to the configured GraphQL endpoint" unless uri.path == @graphql_path
+        unless body.is_a?(Hash) && (body.key?("query") || body.key?(:query))
+          raise ResponseError, "read-only GraphQL query body is required"
+        end
+
+        reject_graphql_mutation!(body)
+      end
+
+      def resolve_uri(path)
+        raw_path = String(path)
+        parsed_path = URI.parse(raw_path)
+        if parsed_path.scheme || parsed_path.host || raw_path.start_with?("//")
+          raise ResponseError, "HTTP request path must be a relative path"
+        end
+
+        uri = @base_uri + raw_path
+        unless uri.scheme == @base_uri.scheme && uri.host == @base_uri.host && uri.port == @base_uri.port
+          raise ResponseError, "HTTP request path resolved outside the configured base URI"
+        end
+
+        uri
+      rescue ArgumentError, URI::InvalidURIError
+        raise ResponseError, "HTTP request path must be a relative path"
+      end
+
+      def normalize_graphql_path(path)
+        value = String(path)
+        value = "/#{value}" unless value.start_with?("/")
+        value.chomp("/").then { |normalized| normalized.empty? ? "/" : normalized }
+      rescue ArgumentError
+        raise ResponseError, "GraphQL endpoint path must be a string"
       end
     end
   end

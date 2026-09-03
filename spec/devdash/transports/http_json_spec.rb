@@ -59,6 +59,69 @@ RSpec.describe Devdash::Transports::HttpJson do
     }.to raise_error(Devdash::Transports::ResponseError, /read-only/)
   end
 
+  it "rejects an absolute path before making a request" do
+    expect {
+      transport.get(path: "https://evil.example.test/steal", query: {}, headers: {})
+    }.to raise_error(Devdash::Transports::ResponseError, /relative path/)
+
+    expect(WebMock).not_to have_requested(:get, "https://evil.example.test/steal")
+  end
+
+  it "rejects a network-path reference before making a request" do
+    expect {
+      transport.get(path: "//evil.example.test/steal", query: {}, headers: {})
+    }.to raise_error(Devdash::Transports::ResponseError, /relative path/)
+
+    expect(WebMock).not_to have_requested(:get, "https://evil.example.test/steal")
+  end
+
+  it "allows a normal relative GET path" do
+    stub_request(:get, "https://api.example.test/items").to_return(status: 200, body: '{"ok":true}')
+
+    expect(transport.get(path: "items", query: {}, headers: {}).body).to eq("ok" => true)
+  end
+
+  it "rejects POSTs outside the configured GraphQL endpoint before making a request" do
+    expect {
+      transport.post(path: "/items", body: { query: "query { items { id } }" })
+    }.to raise_error(Devdash::Transports::ResponseError, /GraphQL endpoint/)
+
+    expect(WebMock).not_to have_requested(:post, "https://api.example.test/items")
+  end
+
+  it "rejects nil, non-Hash, and missing-query POST bodies before making requests" do
+    [nil, "query { items { id } }", {}, { variables: {} }, { query: :not_a_string }].each do |body|
+      expect {
+        transport.post(path: "/graphql", body: body)
+      }.to raise_error(Devdash::Transports::ResponseError, /read-only GraphQL query/)
+    end
+  end
+
+  it "accepts normal and shorthand read-only GraphQL queries" do
+    stub_request(:post, "https://api.example.test/graphql")
+      .with(body: { query: "query GetItems { items { id } }" }.to_json)
+      .to_return(status: 200, body: '{"data":{}}')
+    expect(transport.post(path: "/graphql", body: { query: "query GetItems { items { id } }" }).body).to eq("data" => {})
+
+    stub_request(:post, "https://api.example.test/graphql")
+      .with(body: { query: "{ items { id } }" }.to_json)
+      .to_return(status: 200, body: '{"data":{}}')
+    expect(transport.post(path: "/graphql", body: { query: "{ items { id } }" }).body).to eq("data" => {})
+  end
+
+  it "rejects mutation operations anywhere in a GraphQL document" do
+    [
+      "query Read { items { id } } mutation Write { createItem { id } }",
+      "query Read { items { id } }\nmutation Write($id: ID!) { deleteItem(id: $id) { id } }"
+    ].each do |query|
+      expect {
+        transport.post(path: "/graphql", body: { query: query })
+      }.to raise_error(Devdash::Transports::ResponseError, /read-only/)
+    end
+
+    expect(WebMock).not_to have_requested(:post, "https://api.example.test/graphql")
+  end
+
   it "clamps negative and huge numeric Retry-After values" do
     delays = []
     client = described_class.new(base_uri: "https://api.example.test", sleeper: ->(seconds) { delays << seconds })
