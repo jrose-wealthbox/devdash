@@ -1,0 +1,1 @@
+{"data":{"issue":{"history":{"nodes":[{"id":"history-1","createdAt":"2026-01-02T00:00:00Z","actor":null,"fromState":{"id":"state-0","name":"Todo"},"toState":{"id":"state-1","name":"In Progress"}}],"pageInfo":{"hasNextPage":true,"endCursor":"history-cursor-1"}}}}}

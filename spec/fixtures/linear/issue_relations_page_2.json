@@ -1,0 +1,1 @@
+{"data":{"issue":{"labels":{"nodes":[{"id":"label-2","name":"sync"}],"pageInfo":{"hasNextPage":false,"endCursor":"labels-cursor-2"}},"attachments":{"nodes":[{"id":"attachment-2","title":"PR 2","url":"https://github.com/acme/repo/pull/2"}],"pageInfo":{"hasNextPage":false,"endCursor":"attachments-cursor-2"}}}}}
