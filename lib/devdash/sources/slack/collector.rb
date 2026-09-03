@@ -1,17 +1,29 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "client"
 require_relative "user_normalizer"
 
 module Devdash
   module Sources
     module Slack
+      def self.register_normalizer!
+        normalizer = UserNormalizer
+        registered = Devdash::Normalizers::Registry.fetch(source: "slack", entity_type: "user")
+        return registered if registered.equal?(normalizer)
+
+        raise ArgumentError, "different normalizer already registered for slack:user"
+      rescue KeyError
+        Devdash::Normalizers::Registry.register(source: "slack", entity_type: "user", normalizer: normalizer)
+      end
+
       class Collector
         SOURCE = "slack"
         SCOPE_KEY = "workspace"
         CURSOR_TYPE = "full_snapshot"
 
         def initialize(client:, writer: Devdash::Ingestion::Writer.new, clock: -> { Time.now.utc })
+          Slack.register_normalizer!
           @client = client
           @writer = writer
           @clock = clock
@@ -42,4 +54,4 @@ module Devdash
   end
 end
 
-Devdash::Normalizers::Registry.register(source: "slack", entity_type: "user", normalizer: Devdash::Sources::Slack::UserNormalizer)
+Devdash::Sources::Slack.register_normalizer!

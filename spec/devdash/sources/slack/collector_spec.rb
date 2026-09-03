@@ -2,10 +2,24 @@ require "spec_helper"
 require_relative "../../../../lib/devdash/sources/slack/collector"
 
 RSpec.describe Devdash::Sources::Slack::Collector do
-  before { connect_test_database! }
+  before do
+    connect_test_database!
+    Devdash::Sources::Slack.register_normalizer!
+  end
 
   let(:users) { JSON.parse(File.read("spec/fixtures/slack/users_page_1.json"))["members"] }
   let(:client) { instance_double(Devdash::Sources::Slack::Client, each_user: users.each) }
+
+  it "loads its client dependency and restores normalizer registration idempotently" do
+    expect(Devdash::Sources::Slack::Client).to be
+
+    Devdash::Normalizers::Registry.clear!
+
+    expect { Devdash::Sources::Slack.register_normalizer! }.not_to raise_error
+    expect(Devdash::Normalizers::Registry.fetch(source: "slack", entity_type: "user"))
+      .to equal(Devdash::Sources::Slack::UserNormalizer)
+    expect { Devdash::Sources::Slack.register_normalizer! }.not_to raise_error
+  end
 
   it "persists a complete workspace snapshot and coverage" do
     run = described_class.new(client: client, clock: -> { Time.utc(2026, 9, 3, 12) }).call
