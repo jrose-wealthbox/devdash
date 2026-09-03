@@ -19,6 +19,20 @@ RSpec.describe Devdash::Sources::Slack::Client do
     expect(transport).not_to have_received(:get).with(hash_including(path: a_string_matching(/conversations|history/)))
   end
 
+  it "strips nonblank cursors and stops on whitespace-only cursors" do
+    first_page = { "ok" => true, "members" => [{ "id" => "U001" }],
+      "response_metadata" => { "next_cursor" => "  page-two  " } }
+    final_page = { "ok" => true, "members" => [{ "id" => "U002" }],
+      "response_metadata" => { "next_cursor" => " \t" } }
+    allow(transport).to receive(:get).with(path: "/api/users.list", query: { "limit" => "200" }, headers: { "Authorization" => "Bearer slack-secret" })
+      .and_return(instance_double(Devdash::Transports::HttpJson::Response, body: first_page))
+    allow(transport).to receive(:get).with(path: "/api/users.list", query: { "limit" => "200", "cursor" => "page-two" }, headers: { "Authorization" => "Bearer slack-secret" })
+      .and_return(instance_double(Devdash::Transports::HttpJson::Response, body: final_page))
+
+    expect(client.each_user.map { |user| user.fetch("id") }).to eq(%w[U001 U002])
+    expect(transport).to have_received(:get).twice
+  end
+
   it "raises an authentication error for Slack body-level invalid_auth" do
     allow(transport).to receive(:get).and_return(instance_double(Devdash::Transports::HttpJson::Response,
       body: { "ok" => false, "error" => "invalid_auth" }))

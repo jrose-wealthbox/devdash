@@ -27,7 +27,7 @@ module Devdash
             end
 
             Array(body["members"]).each { |user| yield user }
-            cursor = body.dig("response_metadata", "next_cursor").to_s
+            cursor = body.dig("response_metadata", "next_cursor").to_s.strip
             break if cursor.empty?
           end
         end
