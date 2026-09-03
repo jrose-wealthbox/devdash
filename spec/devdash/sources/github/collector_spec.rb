@@ -41,6 +41,27 @@ RSpec.describe Devdash::Sources::Github::Collector do
     described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 4) }).call(repository_scope: scope, since: nil)
   end
 
+  it "honors an explicit backfill boundary before the stored cursor" do
+    client = instance_double(Devdash::Sources::Github::Client)
+    writer = instance_double(Devdash::Ingestion::Writer)
+    cursor_time = Time.utc(2026, 1, 10)
+    requested_since = Time.utc(2025, 12, 1)
+    observed_at = Time.utc(2026, 1, 11)
+    allow(client).to receive(:repository).with("o/r").and_return({ "default_branch" => "main" })
+    expect(client).to receive(:updated_pull_numbers).with("o/r", from: requested_since, to: observed_at).and_return([])
+    allow(client).to receive(:open_pull_numbers).with("o/r").and_return([])
+    allow(client).to receive(:default_branch_commits).with("o/r", branch: "main", since: requested_since).and_return([])
+    allow(client).to receive(:page_count).and_return(0)
+    allow(writer).to receive(:call)
+
+    Devdash::Models::SyncCursor.create!(
+      source: "github", scope_key: "o/r", cursor_type: "updated_at", cursor_value: cursor_time.iso8601
+    )
+    scope = Devdash::RepositoryScope.new(key: "r", repository_names: ["o/r"], label: "r", configuration_hash: "x")
+
+    described_class.new(client:, writer:, clock: -> { observed_at }).call(repository_scope: scope, since: requested_since)
+  end
+
   it "preserves a successful repository run when a later repository fails" do
     client = instance_double(Devdash::Sources::Github::Client)
     writer = instance_double(Devdash::Ingestion::Writer)

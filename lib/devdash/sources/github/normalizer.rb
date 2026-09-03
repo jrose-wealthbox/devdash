@@ -23,7 +23,7 @@ module Devdash
   module Sources
     module Github
       class Normalizer
-        VERSION = 1
+        VERSION = 2
         DEFAULT_EXCLUSION_GLOBS = [
           ["**/vendor/**", "vendor"], ["vendor/**", "vendor"],
           ["**/generated/**", "generated"], ["generated/**", "generated"],

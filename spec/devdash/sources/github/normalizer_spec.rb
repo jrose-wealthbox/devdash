@@ -5,6 +5,10 @@ require "securerandom"
 RSpec.describe Devdash::Sources::Github::Normalizer do
   before { connect_test_database! }
 
+  it "bumps its version when normalized identity semantics change" do
+    expect(described_class::VERSION).to eq(2)
+  end
+
   it "registers both canonical and legacy pull request event entity types" do
     expect(Devdash::Normalizers::Registry.fetch(source: "github", entity_type: "pull_request_events"))
       .to be(Devdash::Sources::Github::NORMALIZER)

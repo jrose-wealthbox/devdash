@@ -31,7 +31,7 @@ module Devdash
           @client, @writer, @clock, @overlap = client, writer, clock, overlap
         end
 
-        def call(repository_scope:, since:)
+        def call(repository_scope:, since: nil)
           Github.register_normalizer!
           repository_scope.repository_names.each_with_object([]) do |name, runs|
             runs << collect_repository(name, since)
@@ -88,10 +88,11 @@ module Devdash
         end
 
         def lower_bound(requested_since, cursor_before, observed_at)
-          cursor_time = source_time(cursor_before)
           requested_time = source_time(requested_since)
-          candidate = [requested_time, cursor_time && cursor_time - @overlap].compact.max
-          candidate ||= observed_at - @overlap
+          return [requested_time, observed_at].min if requested_time
+
+          cursor_time = source_time(cursor_before)
+          candidate = cursor_time ? cursor_time - @overlap : observed_at - @overlap
           [candidate, observed_at].compact.min
         end
 
