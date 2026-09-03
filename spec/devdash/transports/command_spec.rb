@@ -29,4 +29,18 @@ RSpec.describe Devdash::Transports::Command do
     expect(error.message).to include("gh", "exit status 1")
     expect(error.message).not_to include("secret-value", "Bearer")
   end
+
+  it "redacts credentials in JSON-encoded stderr" do
+    runner = double("runner")
+    status = instance_double(Process::Status, success?: false, exitstatus: 1)
+    stderr = '{"token":"token-secret","access_token": "access-secret", "api_key":"api-secret", "authorization":"Bearer auth-secret"}'
+    allow(runner).to receive(:call).and_return(["", stderr, status])
+
+    error = nil
+    expect { described_class.new(runner: runner).capture("gh", "api", "repos/o/r") }
+      .to raise_error(Devdash::Transports::CommandError) { |raised| error = raised }
+
+    expect(error.message).to include('"token":"[REDACTED]"', '"access_token": "[REDACTED]"', '"api_key":"[REDACTED]"', '"authorization":"[REDACTED]"')
+    expect(error.message).not_to include("token-secret", "access-secret", "api-secret", "auth-secret", "Bearer")
+  end
 end
