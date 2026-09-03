@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 require "devdash/sources/github/collector"
+require "open3"
+require "rbconfig"
 
 RSpec.describe Devdash::Sources::Github::Collector do
   before { connect_test_database! }
@@ -101,5 +103,32 @@ RSpec.describe Devdash::Sources::Github::Collector do
     expect(run).to have_attributes(status: "succeeded", page_count: 6)
     expect(Devdash::Models::PullRequest.find_by(number: 42)).to be_present
     expect(run.coverages.where(scope_type: "repository", scope_key: "o/r").count).to eq(7)
+  end
+
+  it "loads CanonicalJson when the collector is required directly" do
+    script = 'require "devdash/sources/github/collector"; puts Devdash::Ingestion::CanonicalJson.dump({ "b" => 2, "a" => 1 })'
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-I", File.expand_path("../../../../lib", __dir__), "-e", script)
+
+    expect(status).to be_success
+    expect(stdout).to eq("{\"a\":1,\"b\":2}\n")
+    expect(stderr).to eq("")
+  end
+
+  it "advances a quiet repository cursor to the successful observation boundary" do
+    client = instance_double(Devdash::Sources::Github::Client)
+    writer = instance_double(Devdash::Ingestion::Writer)
+    observed_at = Time.utc(2026, 1, 4)
+    allow(client).to receive(:repository).and_return({ "default_branch" => "main", "updated_at" => "2026-01-01T00:00:00Z" })
+    allow(client).to receive(:updated_pull_numbers).and_return([])
+    allow(client).to receive(:open_pull_numbers).and_return([])
+    allow(client).to receive(:default_branch_commits).and_return([])
+    allow(client).to receive(:page_count).and_return(0)
+    expect(writer).to receive(:call) do |batch|
+      expect(batch.cursor_before).to be_nil
+      expect(batch.cursor_after).to eq(observed_at.iso8601)
+    end
+
+    scope = Devdash::RepositoryScope.new(key: "r", repository_names: ["o/r"], label: "r", configuration_hash: "x")
+    described_class.new(client:, writer:, clock: -> { observed_at }).call(repository_scope: scope, since: observed_at - 86_400)
   end
 end

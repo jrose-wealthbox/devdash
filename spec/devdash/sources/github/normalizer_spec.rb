@@ -85,8 +85,69 @@ RSpec.describe Devdash::Sources::Github::Normalizer do
     expect(Devdash::Models::Person.where(id: manual.id)).to exist
   end
 
-  def source_record(entity_type, external_id, payload, scope_key: "o/r")
+  it "preserves owners, merged people, and other protected references during reset" do
+    normalizer = described_class.new
+    owner = Devdash::Models::Person.create!(display_name: "owner", owner: true)
+    Devdash::Models::SourceIdentity.create!(person: owner, source: "github", external_id: "owner", resolution_method: "provisional")
+
+    destination = Devdash::Models::Person.create!(display_name: "destination")
+    merged = Devdash::Models::Person.create!(display_name: "merged", merged_into: destination)
+    Devdash::Models::SourceIdentity.create!(person: merged, source: "github", external_id: "merged", resolution_method: "unresolved")
+
+    role_protected = Devdash::Models::Person.create!(display_name: "role-protected")
+    Devdash::Models::SourceIdentity.create!(person: role_protected, source: "github", external_id: "role-protected", resolution_method: "provisional")
+    Devdash::Models::RoleAssignment.create!(
+      person: role_protected, source: "slack", original_title: "Engineer", effective_from: Time.utc(2026, 1, 1), observed_at: Time.utc(2026, 1, 1)
+    )
+    Devdash::Models::RoleAssignment.create!(
+      person: role_protected, source: "github", original_title: "Contributor", effective_from: Time.utc(2026, 1, 1), observed_at: Time.utc(2026, 1, 1)
+    )
+
+    [owner, destination, merged, role_protected].each do |person|
+      expect { person.reload }.not_to raise_error
+    end
+    expect { normalizer.reset! }.not_to change(Devdash::Models::Person, :count)
+    expect(Devdash::Models::SourceIdentity.where(source: "github").count).to eq(3)
+    expect(Devdash::Models::RoleAssignment.where(source: "github")).to be_empty
+    expect(Devdash::Models::RoleAssignment.where(source: "slack")).to exist
+  end
+
+  it "uses source record timestamps and retains email evidence on identity updates" do
+    normalizer = described_class.new
+    normalizer.call(source_record("repository", "github:o/r:repository", { "full_name" => "o/r" }))
+    first_observed_at = Time.utc(2026, 1, 1, 12)
+    second_observed_at = Time.utc(2026, 1, 3, 12)
+    first_payload = commit_payload(email: "dev@example.test", sha: "sha")
+    second_payload = commit_payload(email: nil, sha: "sha")
+
+    normalizer.call(source_record("commit_files", "github:o/r:commit:sha", first_payload,
+      observed_at: first_observed_at, source_updated_at: Time.utc(2026, 1, 1)))
+    identity = Devdash::Models::SourceIdentity.find_by!(source: "github", external_id: "dev")
+    identity.update!(resolution_method: "manual")
+
+    normalizer.call(source_record("commit_files", "github:o/r:commit:sha-2", second_payload,
+      observed_at: second_observed_at, source_updated_at: Time.utc(2026, 1, 3)))
+
+    expect(identity.reload).to have_attributes(
+      first_observed_at: first_observed_at, last_observed_at: second_observed_at,
+      normalized_email: "dev@example.test", resolution_method: "manual"
+    )
+    expect(Devdash::Models::Commit.find_by!(sha: "sha").author_email).to eq("dev@example.test")
+  end
+
+  def source_record(entity_type, external_id, payload, scope_key: "o/r", observed_at: Time.utc(2026, 1, 4), source_updated_at: Time.utc(2026, 1, 3))
     run = Devdash::Models::CollectorRun.create!(source: "github", scope_key:, status: "succeeded", started_at: Time.utc(2026, 1, 4))
-    Devdash::Models::SourceRecord.create!(collector_run: run, source: "github", scope_key:, entity_type:, external_id:, observed_at: Time.utc(2026, 1, 4), source_updated_at: Time.utc(2026, 1, 3), query_fingerprint: "test", payload_hash: SecureRandom.hex(8), payload_json: JSON.generate(payload))
+    Devdash::Models::SourceRecord.create!(collector_run: run, source: "github", scope_key:, entity_type:, external_id:, observed_at:, source_updated_at:, query_fingerprint: "test", payload_hash: SecureRandom.hex(8), payload_json: JSON.generate(payload))
+  end
+
+  def commit_payload(email:, sha:)
+    {
+      "sha" => sha, "author" => { "login" => "dev" }, "committer" => { "login" => "dev" },
+      "commit" => {
+        "author" => { "email" => email, "date" => "2026-01-01T00:00:00Z" },
+        "committer" => { "email" => email, "date" => "2026-01-01T01:00:00Z" }
+      },
+      "parents" => [], "files" => []
+    }
   end
 end

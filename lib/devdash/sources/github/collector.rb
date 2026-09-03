@@ -7,8 +7,10 @@ module Devdash
 end
 
 require_relative "../../ingestion/batch"
+require_relative "../../ingestion/canonical_json"
 require_relative "../../ingestion/source_observation"
 require_relative "../../ingestion/writer"
+require_relative "../../repository_scope"
 require_relative "normalizer"
 require_relative "../../models/collector_run"
 require_relative "../../models/collector_run_coverage"
@@ -78,7 +80,7 @@ module Devdash
 
           batch = Devdash::Ingestion::Batch.new(
             source: SOURCE, scope_key: name, cursor_type: CURSOR_TYPE,
-            cursor_before:, cursor_after: next_cursor(cursor_before, observations, observed_at),
+            cursor_before:, cursor_after: next_cursor(cursor_before, observed_at),
             observations:, coverages: coverages(name, from, observed_at),
             page_count: page_count, retry_count: 0
           )
@@ -103,10 +105,9 @@ module Devdash
           end
         end
 
-        def next_cursor(cursor_before, observations, observed_at)
+        def next_cursor(cursor_before, observed_at)
           previous = source_time(cursor_before)
-          source_max = observations.filter_map(&:source_updated_at).max || observed_at
-          [previous, source_max].compact.max.iso8601
+          [previous, observed_at].compact.max.iso8601
         end
 
         def page_count

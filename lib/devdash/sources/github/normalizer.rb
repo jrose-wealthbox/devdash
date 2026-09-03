@@ -45,24 +45,26 @@ module Devdash
           payload = JSON.parse(record.payload_json)
           case record.entity_type
           when "repository" then normalize_repository(record.scope_key, payload)
-          when "pull_request" then normalize_pull(record.scope_key, payload)
+          when "pull_request" then normalize_pull(record.scope_key, record, payload)
           when "pull_request_reviews" then normalize_reviews(record.scope_key, record, payload)
           when "pull_request_timeline", "pull_request_events" then normalize_events(record.scope_key, record, payload)
           when "pull_request_files" then normalize_files(record.scope_key, record, payload)
-          when "commit" then normalize_commit(record.scope_key, payload)
-          when "commit_files" then normalize_commit_files(record.scope_key, payload)
+          when "commit" then normalize_commit(record.scope_key, record, payload)
+          when "commit_files" then normalize_commit_files(record.scope_key, record, payload)
           end
         end
 
         def reset!
-          Models::PullRequestFile.delete_all
-          Models::PullRequestReview.delete_all
-          Models::PullRequestEvent.delete_all
-          Models::CommitFile.delete_all
-          Models::Commit.update_all(pull_request_id: nil)
-          Models::Commit.delete_all
-          Models::PullRequest.delete_all
-          remove_provisional_identities!
+          ActiveRecord::Base.transaction do
+            Models::PullRequestFile.delete_all
+            Models::PullRequestReview.delete_all
+            Models::PullRequestEvent.delete_all
+            Models::CommitFile.delete_all
+            Models::Commit.update_all(pull_request_id: nil)
+            Models::Commit.delete_all
+            Models::PullRequest.delete_all
+            remove_provisional_identities!
+          end
         end
 
         private
@@ -73,15 +75,22 @@ module Devdash
           end
         end
 
-        def person(login, email: nil)
+        def person(login, email: nil, observed_at:)
           login = login.to_s.strip
-          email = email.to_s.strip
+          email = email.to_s.strip.downcase
           return nil if login.empty? && email.empty?
 
           external = login.empty? ? email : login
           identity = Models::SourceIdentity.find_by(source: "github", external_id: external)
+          identity ||= Models::SourceIdentity.find_by(source: "github", normalized_email: email) unless email.empty?
           if identity
-            identity.update!(last_observed_at: Time.now.utc, login: nonempty(login), normalized_email: nonempty(email))
+            identity.update!(
+              login: nonempty(login) || identity.login,
+              normalized_email: nonempty(email) || identity.normalized_email,
+              observed_display_name: nonempty(login) || identity.observed_display_name,
+              first_observed_at: [identity.first_observed_at, observed_at].compact.min,
+              last_observed_at: [identity.last_observed_at, observed_at].compact.max
+            )
             return identity.person
           end
 
@@ -89,7 +98,8 @@ module Devdash
           Models::SourceIdentity.create!(
             person:, source: "github", external_id: external,
             login: nonempty(login), normalized_email: nonempty(email),
-            observed_display_name: nonempty(login), resolution_method: "provisional"
+            observed_display_name: nonempty(login), resolution_method: "provisional",
+            first_observed_at: observed_at, last_observed_at: observed_at
           )
           person
         end
@@ -102,12 +112,12 @@ module Devdash
           )
         end
 
-        def normalize_pull(name, payload)
+        def normalize_pull(name, record, payload)
           repo = repository(name)
           pr = Models::PullRequest.find_or_initialize_by(repository: repo, number: payload.fetch("number"))
           user = payload["user"] || {}
           pr.update!(
-            node_id: payload["node_id"], author: person(user["login"]), author_login: user["login"],
+            node_id: payload["node_id"], author: person(user["login"], observed_at: record.observed_at), author_login: user["login"],
             state: payload["state"], draft: payload["draft"] == true,
             base_branch: payload.dig("base", "ref"), head_sha: payload.dig("head", "sha"),
             merge_sha: payload["merge_commit_sha"], opened_at: parse_time(payload["created_at"]),
@@ -131,7 +141,7 @@ module Devdash
             pr = pull(name, number)
             user = review["user"] || {}
             Models::PullRequestReview.find_or_initialize_by(github_review_id: review.fetch("id").to_s).update!(
-              pull_request: pr, reviewer: person(user["login"]), reviewer_login: user["login"],
+              pull_request: pr, reviewer: person(user["login"], observed_at: record.observed_at), reviewer_login: user["login"],
               state: review["state"], submitted_at: parse_time(review["submitted_at"])
             )
           end
@@ -150,8 +160,8 @@ module Devdash
             Models::PullRequestEvent.find_or_initialize_by(
               pull_request: pr, stable_external_id: event["id"].to_s
             ).update!(
-              kind: event["event"] || event["type"], actor: person(actor["login"]), actor_login: actor["login"],
-              subject: person(requested["login"]), subject_login: requested["login"],
+              kind: event["event"] || event["type"], actor: person(actor["login"], observed_at: record.observed_at), actor_login: actor["login"],
+              subject: person(requested["login"], observed_at: record.observed_at), subject_login: requested["login"],
               occurred_at: parse_time(event["created_at"]), derivation: "github_timeline"
             )
           end
@@ -172,25 +182,27 @@ module Devdash
           end
         end
 
-        def normalize_commit(name, payload)
+        def normalize_commit(name, record, payload)
           repo = repository(name)
           author = payload.dig("commit", "author") || {}
           committer = payload.dig("commit", "committer") || {}
           commit = Models::Commit.find_or_initialize_by(repository: repo, sha: payload.fetch("sha"))
           reachable = commit.default_branch_reachable || payload["default_branch_reachable"] == true
           commit.update!(
-            author: person(payload.dig("author", "login"), email: author["email"]),
-            committer: person(payload.dig("committer", "login"), email: committer["email"]),
-            author_login: payload.dig("author", "login"), author_email: author["email"],
-            committer_login: payload.dig("committer", "login"), committer_email: committer["email"],
+            author: person(payload.dig("author", "login"), email: author["email"], observed_at: record.observed_at),
+            committer: person(payload.dig("committer", "login"), email: committer["email"], observed_at: record.observed_at),
+            author_login: nonempty(payload.dig("author", "login")) || commit.author_login,
+            author_email: nonempty(author["email"]) || commit.author_email,
+            committer_login: nonempty(payload.dig("committer", "login")) || commit.committer_login,
+            committer_email: nonempty(committer["email"]) || commit.committer_email,
             authored_at: parse_time(author["date"]), committed_at: parse_time(committer["date"]),
             parent_count: Array(payload["parents"]).length, default_branch_reachable: reachable,
             pull_request: pull_for_commit(name, payload)
           )
         end
 
-        def normalize_commit_files(name, payload)
-          normalize_commit(name, payload)
+        def normalize_commit_files(name, record, payload)
+          normalize_commit(name, record, payload)
           commit = Models::Commit.find_by!(repository: repository(name), sha: payload.fetch("sha"))
           commit.commit_files.delete_all
           Array(payload["files"]).sort_by { |file| file.fetch("filename") }.each do |file|
@@ -262,18 +274,22 @@ module Devdash
         end
 
         def remove_provisional_identities!
-          identities = Models::SourceIdentity.where(source: "github", resolution_method: %w[provisional unresolved])
-          person_ids = identities.distinct.pluck(:person_id)
-          identities.delete_all
-          person_ids.each do |person_id|
-            person = Models::Person.find_by(id: person_id)
-            next unless person
-            next if Models::SourceIdentity.exists?(person_id: person_id)
-            next if Models::RoleAssignment.exists?(person_id: person_id)
-            next if Models::PersonMergeAudit.exists?(source_person_id: person_id) || Models::PersonMergeAudit.exists?(destination_person_id: person_id)
+          provisional_methods = %w[provisional unresolved]
+          github_identities = Models::SourceIdentity.where(source: "github")
+          deletable_people = Models::Person
+            .where(id: github_identities.where(resolution_method: provisional_methods).select(:person_id))
+            .where.not(id: github_identities.where.not(resolution_method: provisional_methods).select(:person_id))
+            .where.not(id: Models::SourceIdentity.where.not(source: "github").select(:person_id))
+            .where(owner: false, merged_into_id: nil)
+            .where.not(id: Models::Person.where.not(merged_into_id: nil).select(:merged_into_id))
+            .where.not(id: Models::PersonMergeAudit.select(:source_person_id))
+            .where.not(id: Models::PersonMergeAudit.select(:destination_person_id))
+            .where.not(id: Models::RoleAssignment.where.not(source: "github").select(:person_id))
+          person_ids = deletable_people.pluck(:id)
 
-            person.delete
-          end
+          Models::RoleAssignment.where(source: "github").delete_all
+          Models::SourceIdentity.where(source: "github", person_id: person_ids).delete_all
+          Models::Person.where(id: person_ids).delete_all
         end
       end
 
