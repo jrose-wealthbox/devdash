@@ -1,0 +1,108 @@
+# frozen_string_literal: true
+
+require "digest"
+
+module Devdash
+  module Ingestion
+    class StaleCursorError < Devdash::Error; end
+
+    class Writer
+      SECRET_PATTERN = /(?:authorization|access_token|api[_-]?key|x-api-key)/i
+
+      def initialize(registry: Devdash::Normalizers::Registry)
+        @registry = registry
+      end
+
+      def call(batch)
+        run = Models::CollectorRun.create!(
+          source: batch.source, scope_key: batch.scope_key, status: "running",
+          started_at: Time.now.utc, cursor_before: batch.cursor_before,
+          cursor_after: batch.cursor_after, page_count: batch.page_count,
+          retry_count: batch.retry_count
+        )
+
+        record_count = 0
+        begin
+          ActiveRecord::Base.transaction do
+            verify_cursor!(batch)
+            batch.observations.each do |observation|
+              source_record, created = find_or_create_source_record!(run, batch, observation)
+              normalize!(source_record) if created || normalizer_stale?(source_record, batch, observation)
+              record_count += 1 if created
+            end
+            batch.coverages.each { |coverage| run.coverages.create!(coverage_attributes(coverage, batch)) }
+            upsert_cursor!(batch)
+          end
+
+          run.update!(status: "succeeded", finished_at: Time.now.utc, record_count: record_count)
+          run
+        rescue Exception => error # rubocop:disable Lint/救済Exception
+          run.update!(
+            status: "failed", finished_at: Time.now.utc,
+            error_class: error.class.name, error_message: sanitize(error.message)
+          )
+          raise
+        end
+      end
+
+      private
+
+      def verify_cursor!(batch)
+        cursor = Models::SyncCursor.find_by(source: batch.source, scope_key: batch.scope_key, cursor_type: batch.cursor_type)
+        actual = cursor&.cursor_value
+        return if actual == batch.cursor_before
+
+        raise StaleCursorError, "cursor changed for #{batch.source}/#{batch.scope_key}"
+      end
+
+      def find_or_create_source_record!(run, batch, observation)
+        payload_json = CanonicalJson.dump(observation.payload)
+        payload_hash = Digest::SHA256.hexdigest(payload_json)
+        identity = {
+          source: batch.source, scope_key: batch.scope_key,
+          entity_type: observation.entity_type, external_id: observation.external_id,
+          payload_hash: payload_hash
+        }
+        attributes = identity.merge(
+          collector_run: run, source_updated_at: observation.source_updated_at,
+          observed_at: observation.observed_at, api_version: observation.api_version,
+          query_fingerprint: observation.query_fingerprint,
+          payload_json: payload_json
+        )
+        record = Models::SourceRecord.create_or_find_by!(identity) do |candidate|
+          candidate.assign_attributes(attributes)
+        end
+        [record, record.id_previously_changed?]
+      end
+
+      def normalizer_stale?(record, batch, observation)
+        @registry.fetch(source: batch.source, entity_type: observation.entity_type).version != record.normalizer_version
+      end
+
+      def normalize!(record)
+        normalizer = @registry.fetch(source: record.source, entity_type: record.entity_type)
+        normalizer.call(record)
+        record.update!(normalizer_version: normalizer.version)
+      end
+
+      def upsert_cursor!(batch)
+        cursor = Models::SyncCursor.create_or_find_by!(
+          source: batch.source, scope_key: batch.scope_key, cursor_type: batch.cursor_type
+        )
+        cursor.update!(cursor_value: batch.cursor_after, last_succeeded_at: Time.now.utc)
+      end
+
+      def coverage_attributes(coverage, batch)
+        coverage.to_h.merge(scope_type: "configured", scope_key: batch.scope_key)
+      end
+
+      def sanitize(message)
+        sanitized = message.to_s.gsub(
+          /((?:authorization|access_token|api[_-]?key|x-api-key)\s*[:=]\s*)["']?[^,\s"']+/i,
+          '\\1[REDACTED]'
+        )
+        sanitized.gsub(SECRET_PATTERN) { |match| "[REDACTED]" }
+      end
+    end
+  end
+end
