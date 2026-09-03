@@ -104,4 +104,22 @@ RSpec.describe Devdash::Configuration do
         .to raise_error(Devdash::ConfigurationError, /unknown or disabled repository: repo1/)
     end
   end
+
+  it "rejects a non-boolean repository default" do
+    Dir.mktmpdir do |directory|
+      malformed = valid_yaml.sub("default: true", 'default: "false"')
+
+      expect { described_class.load(path: write_config(directory, malformed)) }
+        .to raise_error(Devdash::ConfigurationError, /default must be a boolean/)
+    end
+  end
+
+  it "rejects a non-boolean repository enabled flag" do
+    Dir.mktmpdir do |directory|
+      malformed = valid_yaml.sub("enabled: true", 'enabled: "false"')
+
+      expect { described_class.load(path: write_config(directory, malformed)) }
+        .to raise_error(Devdash::ConfigurationError, /enabled must be a boolean/)
+    end
+  end
 end

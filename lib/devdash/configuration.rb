@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "yaml"
+require "pathname"
 
 module Devdash
   class Configuration
@@ -45,11 +46,20 @@ module Devdash
           raise ConfigurationError, "repository entry #{index + 1} name and alias must be strings"
         end
 
+        default = item.fetch("default", false)
+        enabled = item.fetch("enabled", true)
+        unless default == true || default == false
+          raise ConfigurationError, "repository entry #{index + 1} default must be a boolean"
+        end
+        unless enabled == true || enabled == false
+          raise ConfigurationError, "repository entry #{index + 1} enabled must be a boolean"
+        end
+
         Repository.new(
           name:,
           alias_name:,
-          default: item.fetch("default", false),
-          enabled: item.fetch("enabled", true)
+          default:,
+          enabled:
         )
       end.freeze
       validate!
