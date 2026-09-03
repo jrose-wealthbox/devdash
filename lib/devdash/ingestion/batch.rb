@@ -30,6 +30,8 @@ module Devdash
           end
         when Array
           value.map { |child| deep_copy_and_freeze(child) }
+        when String
+          value.dup.freeze
         else
           value
         end

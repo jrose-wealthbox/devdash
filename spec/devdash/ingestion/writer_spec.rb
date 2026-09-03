@@ -89,21 +89,31 @@ RSpec.describe Devdash::Ingestion::Writer do
   end
 
   it "owns immutable nested observations and coverages" do
-    payload = { "nested" => [{ "value" => 1 }] }
-    coverage = { scope_type: "repository", scope_key: "crm-web", entity_type: "thing", status: "complete",
-                 metadata: { "repos" => ["crm-web"] } }
+    payload_key = +"payload-key"
+    payload_value = +"before"
+    payload = { payload_key => [{ "value" => payload_value }] }
+    coverage_scope = +"crm-web"
+    coverage_repo = +"crm-web"
+    coverage = { scope_type: "repository", scope_key: coverage_scope, entity_type: "thing", status: "complete",
+                 metadata: { "repos" => [coverage_repo] } }
     observation_value = observation("owned").with(payload: payload)
     owned_batch = batch.with(observations: [observation_value], coverages: [coverage])
 
-    payload["nested"][0]["value"] = 99
-    coverage[:metadata]["repos"] << "other-repo"
-    coverage[:scope_key] = "other-repo"
+    payload_value.replace("after")
+    payload_key.replace("changed-key")
+    coverage_repo.replace("other-repo")
+    coverage_scope.replace("other-repo")
 
     expect(owned_batch.observations).to be_frozen
     expect(owned_batch.coverages).to be_frozen
-    expect(owned_batch.observations.first.payload["nested"][0]["value"]).to eq(1)
+    expect(owned_batch.observations.first.payload["payload-key"][0]["value"]).to eq("before")
+    expect(owned_batch.observations.first.payload["payload-key"][0]["value"]).to be_frozen
+    expect(owned_batch.observations.first.payload.keys).to eq(["payload-key"])
+    expect(owned_batch.observations.first.payload.keys.first).to be_frozen
     expect(owned_batch.coverages.first[:metadata]["repos"]).to eq(["crm-web"])
     expect(owned_batch.coverages.first[:scope_key]).to eq("crm-web")
+    expect(owned_batch.coverages.first[:scope_key]).to be_frozen
+    expect(owned_batch.coverages.first[:metadata]["repos"].first).to be_frozen
   end
 
   it "rejects a cursor race between validation and atomic advancement" do

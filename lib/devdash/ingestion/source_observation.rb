@@ -24,9 +24,13 @@ module Devdash
       def deep_copy_and_freeze(value)
         copied = case value
         when Hash
-          value.each_with_object({}) { |(key, child), result| result[key] = deep_copy_and_freeze(child) }
+          value.each_with_object({}) do |(key, child), result|
+            result[deep_copy_and_freeze(key)] = deep_copy_and_freeze(child)
+          end
         when Array
           value.map { |child| deep_copy_and_freeze(child) }
+        when String
+          value.dup.freeze
         else
           value
         end
