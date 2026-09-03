@@ -59,10 +59,23 @@ module Devdash
         end
 
         def reset!
-          slack_people = Models::SourceIdentity.where(source: "slack").distinct.pluck(:person_id)
-          Models::RoleAssignment.where(source: "slack").delete_all
-          Models::SourceIdentity.where(source: "slack").delete_all
-          Models::Person.where(id: slack_people).where.not(id: Models::SourceIdentity.select(:person_id)).delete_all
+          ActiveRecord::Base.transaction do
+            slack_identities = Models::SourceIdentity.where(source: "slack")
+            deletable_people = Models::Person
+              .where(id: slack_identities.where(resolution_method: "unresolved").select(:person_id))
+              .where.not(id: slack_identities.where.not(resolution_method: "unresolved").select(:person_id))
+              .where.not(id: Models::SourceIdentity.where.not(source: "slack").select(:person_id))
+              .where(owner: false, merged_into_id: nil)
+              .where.not(id: Models::Person.where.not(merged_into_id: nil).select(:merged_into_id))
+              .where.not(id: Models::PersonMergeAudit.select(:source_person_id))
+              .where.not(id: Models::PersonMergeAudit.select(:destination_person_id))
+              .where.not(id: Models::RoleAssignment.where.not(source: "slack").select(:person_id))
+            deletable_person_ids = deletable_people.pluck(:id)
+
+            Models::RoleAssignment.where(source: "slack").delete_all
+            Models::SourceIdentity.where(source: "slack", person_id: deletable_person_ids).delete_all
+            Models::Person.where(id: deletable_person_ids).delete_all
+          end
         end
       end
     end

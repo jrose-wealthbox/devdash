@@ -97,4 +97,39 @@ RSpec.describe Devdash::Sources::Slack::UserNormalizer do
 
     expect(identity.reload.resolution_method).to eq("manual")
   end
+
+  it "preserves a manually resolved Slack-only person and identity during reset" do
+    payload = { "id" => "U001", "name" => "alex-owner", "profile" => { "display_name" => "Alex" } }
+    person = described_class.call(source_record(payload))
+    identity = Devdash::Models::SourceIdentity.find_by!(source: "slack", external_id: "U001")
+    identity.update!(resolution_method: "manual")
+
+    expect { described_class.reset! }.not_to change(Devdash::Models::Person, :count)
+    expect(person.reload).to be_persisted
+    expect(identity.reload).to have_attributes(person_id: person.id, resolution_method: "manual")
+  end
+
+  it "preserves a cross-source person and both identities during reset" do
+    payload = { "id" => "U001", "name" => "alex-owner", "profile" => { "display_name" => "Alex" } }
+    person = described_class.call(source_record(payload))
+    observed_at = Time.utc(2026, 9, 3, 12)
+    github_identity = Devdash::Models::SourceIdentity.create!(
+      person:, source: "github", external_id: "GH001", first_observed_at: observed_at, last_observed_at: observed_at
+    )
+
+    expect { described_class.reset! }.not_to change(Devdash::Models::Person, :count)
+    expect(person.reload.source_identities).to contain_exactly(
+      Devdash::Models::SourceIdentity.find_by!(source: "slack", external_id: "U001"), github_identity
+    )
+  end
+
+  it "removes an unresolved Slack-only person and identity during reset" do
+    payload = { "id" => "U001", "name" => "alex-owner", "profile" => { "display_name" => "Alex" } }
+    person = described_class.call(source_record(payload))
+    identity = Devdash::Models::SourceIdentity.find_by!(source: "slack", external_id: "U001")
+
+    expect { described_class.reset! }.to change(Devdash::Models::Person, :count).by(-1)
+    expect { person.reload }.to raise_error(ActiveRecord::RecordNotFound)
+    expect(Devdash::Models::SourceIdentity.exists?(identity.id)).to be(false)
+  end
 end
