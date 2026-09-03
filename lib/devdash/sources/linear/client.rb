@@ -139,14 +139,14 @@ module Devdash
             raise RelationHydrationError, id unless issue.is_a?(Hash)
 
             %w[labels attachments].each do |name|
-              next if finished.fetch(name)
-
               connection = issue[name]
               raise Devdash::Error, "Linear response missing #{name} relation connection for issue #{id}" unless connection.is_a?(Hash)
               relation_nodes = connection["nodes"]
               raise Devdash::Error, "Linear response missing #{name} relation nodes for issue #{id}" unless relation_nodes.is_a?(Array)
-              nodes.fetch(name).concat(relation_nodes)
               page = page_info!(connection)
+              next if finished.fetch(name)
+
+              nodes.fetch(name).concat(relation_nodes)
               if page["hasNextPage"]
                 cursors[name] = page["endCursor"]
                 raise Devdash::Error, "Linear response missing pagination cursor" if cursors[name].to_s.empty?

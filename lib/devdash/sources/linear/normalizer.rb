@@ -413,7 +413,8 @@ module Devdash
         %w[linear_issue linear_issue_history].each do |entity_type|
           Devdash::Normalizers::Registry.register(source: "linear", entity_type:, normalizer: NORMALIZER)
         rescue ArgumentError => error
-          raise unless error.message.include?("already registered")
+          raise unless error.message.include?("already registered") &&
+            Devdash::Normalizers::Registry.fetch(source: "linear", entity_type:).equal?(NORMALIZER)
         end
       end
     end

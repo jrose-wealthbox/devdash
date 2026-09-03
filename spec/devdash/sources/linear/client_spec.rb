@@ -77,6 +77,28 @@ RSpec.describe Devdash::Sources::Linear::Client do
       .to raise_error(Devdash::Error, /missing pageInfo/)
   end
 
+  it "validates a finished relation connection on later pages" do
+    responses = [
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: JSON.parse(File.read("spec/fixtures/linear/issue_archived.json"))),
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: { "data" => { "issue" => {
+          "labels" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false, "endCursor" => nil } },
+          "attachments" => { "nodes" => [], "pageInfo" => { "hasNextPage" => true, "endCursor" => "attachments-cursor-1" } }
+        } } }),
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: { "data" => { "issue" => {
+          "labels" => { "nodes" => nil, "pageInfo" => { "hasNextPage" => false, "endCursor" => nil } },
+          "attachments" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false, "endCursor" => nil } }
+        } } })
+    ]
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(*responses)
+
+    expect { described_class.new(http:, api_key: "secret").issue(id: "issue-archived") }
+      .to raise_error(Devdash::Error, /missing labels relation nodes/)
+  end
+
   it "uses a dedicated issue lookup so archived issues are refreshable" do
     responses = [
       instance_double(Devdash::Transports::HttpJson::Response,

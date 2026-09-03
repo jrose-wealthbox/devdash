@@ -14,6 +14,29 @@ RSpec.describe Devdash::Sources::Linear::Normalizer do
     expect(described_class.new.version).to eq(1)
   end
 
+  describe ".register_normalizer!" do
+    around do |example|
+      Devdash::Normalizers::Registry.clear!
+      example.run
+    ensure
+      Devdash::Normalizers::Registry.clear!
+    end
+
+    it "allows repeated registration of the shared normalizer" do
+      Devdash::Sources::Linear.register_normalizer!
+
+      expect { Devdash::Sources::Linear.register_normalizer! }.not_to raise_error
+    end
+
+    it "does not suppress a duplicate registration for another normalizer" do
+      other_normalizer = double(version: 1, call: nil)
+      Devdash::Normalizers::Registry.register(source: "linear", entity_type: "linear_issue", normalizer: other_normalizer)
+
+      expect { Devdash::Sources::Linear.register_normalizer! }
+        .to raise_error(ArgumentError, /normalizer already registered for linear:linear_issue/)
+    end
+  end
+
   def source_record(entity_type:, external_id:, payload:, observed_at: Time.utc(2026, 1, 1), source_updated_at: nil)
     run = Devdash::Models::CollectorRun.create!(source: "linear", scope_key: "global", status: "succeeded", started_at: observed_at)
     json = Devdash::Ingestion::CanonicalJson.dump(payload)
