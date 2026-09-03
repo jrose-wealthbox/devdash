@@ -1,14 +1,13 @@
 # frozen_string_literal: true
 
 require "digest"
+require_relative "../transports/errors"
 
 module Devdash
   module Ingestion
     class StaleCursorError < Devdash::Error; end
 
     class Writer
-      SECRET_PATTERN = /(?:authorization|access_token|api[_-]?key|x-api-key)/i
-
       def initialize(registry: Devdash::Normalizers::Registry)
         @registry = registry
       end
@@ -43,6 +42,17 @@ module Devdash
           )
           raise
         end
+      end
+
+      def record_failure(source:, scope_key:, cursor_before:, error:, started_at: Time.now.utc,
+        cursor_after: nil, page_count: 0, retry_count: 0)
+        Models::CollectorRun.create!(
+          source: source, scope_key: scope_key, status: "failed",
+          started_at: started_at, finished_at: Time.now.utc,
+          cursor_before: cursor_before, cursor_after: cursor_after,
+          page_count: page_count, retry_count: retry_count,
+          error_class: error.class.name, error_message: sanitize(error.message)
+        )
       end
 
       private
@@ -114,11 +124,7 @@ module Devdash
       end
 
       def sanitize(message)
-        sanitized = message.to_s.gsub(
-          /((?:authorization|access_token|api[_-]?key|x-api-key)\s*[:=]\s*)["']?[^,\s"']+/i,
-          '\\1[REDACTED]'
-        )
-        sanitized.gsub(SECRET_PATTERN) { |match| "[REDACTED]" }
+        Devdash::Transports::Sanitizer.sanitize(message)
       end
     end
   end

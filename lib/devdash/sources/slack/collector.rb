@@ -33,21 +33,37 @@ module Devdash
           cursor = Models::SyncCursor.find_by(source: SOURCE, scope_key: SCOPE_KEY, cursor_type: CURSOR_TYPE)
           cursor_before = cursor&.cursor_value
           observed_at = @clock.call
-          users = @client.each_user.to_a
-          source_updated_at = users.map { |user| user["updated"] }.compact.max
-          cursor_after = source_updated_at ? Time.at(source_updated_at).utc.iso8601 : observed_at.iso8601
-          observations = users.map do |user|
-            Ingestion::SourceObservation.new(entity_type: "user", external_id: user.fetch("id"),
-              source_updated_at: user["updated"] && Time.at(user.fetch("updated")).utc,
-              observed_at: observed_at, api_version: "slack.users.list.v1",
-              query_fingerprint: "users.list:limit=200", payload: user)
+          batch = begin
+            users = @client.each_user.to_a
+            users_with_timestamps = users.map { |user| [user, updated_at_for(user)] }
+            source_updated_at = users_with_timestamps.map(&:last).max
+            cursor_after = source_updated_at ? source_updated_at.iso8601 : observed_at.iso8601
+            observations = users_with_timestamps.map do |user, user_updated_at|
+              Ingestion::SourceObservation.new(entity_type: "user", external_id: user.fetch("id"),
+                source_updated_at: user_updated_at, observed_at: observed_at,
+                api_version: "slack.users.list.v1", query_fingerprint: "users.list:limit=200", payload: user)
+            end
+            Ingestion::Batch.new(source: SOURCE, scope_key: SCOPE_KEY, cursor_type: CURSOR_TYPE,
+              cursor_before: cursor_before, cursor_after: cursor_after, observations: observations,
+              coverages: [{ scope_type: "global", scope_key: SCOPE_KEY, entity_type: "user", status: "complete",
+                            achieved_start_at: source_updated_at, achieved_end_at: observed_at }], page_count: 1, retry_count: 0)
+          rescue StandardError => error
+            @writer.record_failure(source: SOURCE, scope_key: SCOPE_KEY, cursor_before: cursor_before,
+              started_at: observed_at, error: error)
+            raise
           end
-          batch = Ingestion::Batch.new(source: SOURCE, scope_key: SCOPE_KEY, cursor_type: CURSOR_TYPE,
-            cursor_before: cursor_before, cursor_after: cursor_after, observations: observations,
-            coverages: [{ scope_type: "global", scope_key: SCOPE_KEY, entity_type: "user", status: "complete",
-                          achieved_start_at: source_updated_at && Time.at(source_updated_at).utc,
-                          achieved_end_at: observed_at }], page_count: 1, retry_count: 0)
+
           @writer.call(batch)
+        end
+
+        private
+
+        def updated_at_for(user)
+          updated = user["updated"]
+          return Time.at(updated).utc if updated.is_a?(Integer)
+
+          raise ArgumentError,
+            "Slack user #{user["id"] || "unknown"} has missing or non-integer updated timestamp"
         end
       end
     end
