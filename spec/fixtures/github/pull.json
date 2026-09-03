@@ -1,0 +1,1 @@
+{"number":42,"node_id":"PR_node_42","state":"merged","draft":false,"user":{"login":"dev"},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","closed_at":"2026-01-03T01:00:00Z","merged_at":"2026-01-03T02:00:00Z","base":{"ref":"main"},"head":{"ref":"feature","sha":"abc"},"merge_commit_sha":"merge42","additions":12,"deletions":4,"changed_files":3}

@@ -25,9 +25,14 @@ module Devdash
         end
 
         ActiveRecord::Base.transaction do
+          reset_keys = {}
           runs.each_with_index do |run, index|
             (source, entity_type), normalizer = entries[index]
-            normalizer.reset! if normalizer.respond_to?(:reset!)
+            reset_key = [source, normalizer.object_id]
+            if normalizer.respond_to?(:reset!) && !reset_keys.key?(reset_key)
+              normalizer.reset!
+              reset_keys[reset_key] = true
+            end
             records = ordered_records(source, entity_type)
             records.each do |record|
               normalizer.call(record)

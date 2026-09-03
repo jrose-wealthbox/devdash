@@ -40,6 +40,17 @@ RSpec.describe Devdash::Ingestion::Writer do
     expect(Devdash::Models::SyncCursor.find_by(source: "fake", scope_key: "global").cursor_value).to eq("cursor-1")
   end
 
+  it "re-normalizes an existing source record when its normalizer version is stale" do
+    writer.call(batch)
+    Devdash::Models::SourceRecord.last.update!(normalizer_version: 0)
+    FakeNormalizer.reset!
+
+    writer.call(batch.with(cursor_before: "cursor-1"))
+
+    expect(FakeNormalizer.calls).to eq(["one"])
+    expect(Devdash::Models::SourceRecord.last.normalizer_version).to eq(FakeNormalizer.version)
+  end
+
   it "rolls back records and cursor while retaining a sanitized failed run" do
     failing_batch = batch.with(observations: [observation("two"), observation("three")])
     FakeNormalizer.raise_on_external_id = "three"

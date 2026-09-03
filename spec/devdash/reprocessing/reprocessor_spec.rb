@@ -10,9 +10,9 @@ RSpec.describe Devdash::Reprocessing::Reprocessor do
     Devdash::Normalizers::Registry.clear!
   end
 
-  def source_record(id, observed_at:, source_updated_at: nil, version: nil)
-    run = Devdash::Models::CollectorRun.create!(source: "test", scope_key: "all", status: "succeeded", started_at: observed_at)
-    Devdash::Models::SourceRecord.create!(collector_run: run, source: "test", scope_key: "all", entity_type: "thing",
+  def source_record(id, observed_at:, source_updated_at: nil, version: nil, source: "test", entity_type: "thing")
+    run = Devdash::Models::CollectorRun.create!(source:, scope_key: "all", status: "succeeded", started_at: observed_at)
+    Devdash::Models::SourceRecord.create!(collector_run: run, source:, scope_key: "all", entity_type:,
       external_id: id, observed_at: observed_at, source_updated_at: source_updated_at,
       query_fingerprint: "q", payload_hash: "#{id}-#{observed_at.to_i}", payload_json: "{}", normalizer_version: version)
   end
@@ -29,6 +29,26 @@ RSpec.describe Devdash::Reprocessing::Reprocessor do
     expect(FakeNormalizer.calls).to eq(["earlier", "later"])
     expect(Devdash::Models::SourceRecord.pluck(:normalizer_version).uniq).to eq([1])
     expect(Devdash::Models::NormalizationRun.last).to have_attributes(status: "succeeded", input_count: 2)
+  end
+
+  it "resets a shared source normalizer once across its entity registrations" do
+    source_record("repo", observed_at: Time.utc(2026, 1, 1), version: 1, source: "github", entity_type: "repository")
+    source_record("pull", observed_at: Time.utc(2026, 1, 2), version: 1, source: "github", entity_type: "pull_request")
+    normalizer = Class.new do
+      class << self
+        attr_accessor :reset_count
+
+        def version = 1
+        def reset! = self.reset_count = reset_count.to_i + 1
+        def call(*) = nil
+      end
+    end
+    Devdash::Normalizers::Registry.register(source: "github", entity_type: "repository", normalizer: normalizer)
+    Devdash::Normalizers::Registry.register(source: "github", entity_type: "pull_request", normalizer: normalizer)
+
+    described_class.new(registry: Devdash::Normalizers::Registry).call
+
+    expect(normalizer.reset_count).to eq(1)
   end
 
   it "rolls back canonical changes but records a failed run" do
