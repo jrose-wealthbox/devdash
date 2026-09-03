@@ -24,4 +24,29 @@ RSpec.describe Devdash::Sources::Linear::Client do
       body: { "errors" => [{ "message" => "forbidden", "code" => "AUTH" }] }))
     expect { described_class.new(http:, api_key: "secret").each_issue { |_| } }.to raise_error(Devdash::Error, /AUTH: forbidden/)
   end
+
+  it "does not request Linear's unsupported active field" do
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(instance_double(Devdash::Transports::HttpJson::Response,
+      body: { "data" => { "issues" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false } } } }))
+
+    described_class.new(http:, api_key: "secret").each_issue { |_| }
+
+    expect(http).to have_received(:post) do |request|
+      expect(request.fetch(:body).fetch("query")).not_to match(/\bactive\b/)
+    end
+  end
+
+  it "requests material history changes and their raw JSON metadata" do
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(instance_double(Devdash::Transports::HttpJson::Response,
+      body: { "data" => { "issues" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false } } } }))
+
+    described_class.new(http:, api_key: "secret").each_issue { |_| }
+
+    expect(http).to have_received(:post) do |request|
+      query = request.fetch(:body).fetch("query")
+      expect(query).to include("changes", "removedLabelIds", "removedLabels", "attachmentId", "fromProjectMilestone")
+    end
+  end
 end

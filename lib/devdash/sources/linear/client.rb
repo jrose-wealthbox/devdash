@@ -1,19 +1,43 @@
 # frozen_string_literal: true
 
 require "time"
+require_relative "../../../devdash"
 
 module Devdash
   module Sources
     module Linear
       class Client
+        HISTORY_NODE_FIELDS = <<~GRAPHQL.freeze
+          id type createdAt updatedAt actor { id name email } actorId changes
+          archived archivedAt autoArchived autoClosed trashed
+          addedLabelIds addedLabels { id name } removedLabelIds removedLabels { id name }
+          addedToReleaseIds addedToReleases { id name } removedFromReleaseIds removedFromReleases { id name }
+          attachment { id title url } attachmentId
+          fromState { id name type } toState { id name type }
+          fromAssignee { id name email } toAssignee { id name email }
+          fromCycle { id name } toCycle { id name }
+          fromParent { id identifier title } toParent { id identifier title }
+          fromDelegate { id name email } toDelegate { id name email }
+          fromProjectMilestone { id name } toProjectMilestone { id name }
+          fromAssigneeId toAssigneeId fromCycleId toCycleId
+          fromDueDate toDueDate fromEstimate toEstimate
+          fromParentId toParentId fromPriority toPriority
+          fromProjectId toProjectId fromStateId toStateId fromTeamId toTeamId
+          fromTitle toTitle
+          fromProject { id name } toProject { id name }
+          fromTeam { id name } toTeam { id name }
+          fromSlaBreached fromSlaBreachesAt fromSlaStartedAt fromSlaType
+          toSlaBreached toSlaBreachesAt toSlaStartedAt toSlaType updatedDescription
+        GRAPHQL
+
         ISSUE_QUERY = <<~GRAPHQL.freeze
           query Issues($filter: IssueFilter, $after: String) {
             issues(filter: $filter, first: 100, after: $after) {
               nodes { id identifier title url createdAt updatedAt startedAt completedAt canceledAt estimate
-                active team { id name } project { id name } state { id name type }
+                team { id name } project { id name } state { id name type }
                 creator { id name email } assignee { id name email }
                 labels { nodes { id name } } attachments { nodes { id title url } }
-                history { nodes { id type createdAt actor { id name email } fromState { id name type } toState { id name type } fromAssignee { id name email } toAssignee { id name email } } pageInfo { hasNextPage endCursor } }
+                history { nodes { #{HISTORY_NODE_FIELDS} } pageInfo { hasNextPage endCursor } }
               }
               pageInfo { hasNextPage endCursor }
             }
@@ -23,7 +47,7 @@ module Devdash
         HISTORY_QUERY = <<~GRAPHQL.freeze
           query IssueHistory($id: String!, $after: String) {
             issue(id: $id) { history(first: 100, after: $after) {
-              nodes { id type createdAt actor { id name email } fromState { id name type } toState { id name type } fromAssignee { id name email } toAssignee { id name email } }
+              nodes { #{HISTORY_NODE_FIELDS} }
               pageInfo { hasNextPage endCursor }
             } }
           }

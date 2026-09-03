@@ -2,10 +2,12 @@
 
 require "time"
 require "digest"
+require_relative "../../../devdash"
 require_relative "../../ingestion/batch"
 require_relative "../../ingestion/source_observation"
 require_relative "../../ingestion/canonical_json"
 require_relative "../../ingestion/writer"
+require_relative "../../models/linear_issue"
 require_relative "normalizer"
 require_relative "client"
 
@@ -28,29 +30,42 @@ module Devdash
           cursor_before = previous&.cursor_value
           lower_bound = [since, (cursor_before && Time.iso8601(cursor_before) - OVERLAP)].compact.max
           issues = {}
-          @client.each_issue(updated_since: lower_bound) { |issue| issues[issue.fetch("id")] = issue }
+          fetched_ids = {}
+          @client.each_issue(updated_since: lower_bound) do |issue|
+            id = issue.fetch("id")
+            fetched_ids[id] = true
+            issues[id] = issue
+          end
+          missing_active_ids = []
           Models::LinearIssue.where(active: true).pluck(:linear_id).each do |id|
             issue = @client.issue(id: id)
-            issues[id] = issue if issue
+            if issue
+              fetched_ids[id] = true
+              issues[id] = issue
+            else
+              # A local active issue that could not be refreshed is not
+              # evidence that its history was covered by this run.
+              missing_active_ids << id unless fetched_ids[id]
+            end
           end
 
           observations = []
-          history_count = 0
           issues.each_value do |issue|
             observations << observation("linear_issue", issue.fetch("id"), issue, issue["updatedAt"], now, "issues")
             history = @client.issue_history(id: issue.fetch("id"))
-            history_count += history.length
             observations << observation("linear_issue_history", "#{issue.fetch("id")}:#{Digest::SHA256.hexdigest(Ingestion::CanonicalJson.dump(history))}",
               { "issue_id" => issue.fetch("id"), "history" => history }, issue["updatedAt"], now, "issue_history")
           end
           cursor_after = issues.values.filter_map { |issue| issue["updatedAt"] }.max || now.iso8601
+          coverage_status = missing_active_ids.empty? ? "complete" : "partial"
+          achieved_end_at = coverage_status == "complete" ? now : nil
           batch = Ingestion::Batch.new(source: "linear", scope_key: "global", cursor_type: "updated_at",
             cursor_before:, cursor_after:, observations:, page_count: issues.length, retry_count: 0,
             coverages: [
               { scope_type: "global", scope_key: "global", entity_type: "linear_issue", requested_start_at: lower_bound,
-                requested_end_at: now, achieved_start_at: lower_bound, achieved_end_at: now, status: "complete" },
+                requested_end_at: now, achieved_start_at: lower_bound, achieved_end_at:, status: coverage_status },
               { scope_type: "global", scope_key: "global", entity_type: "linear_issue_history", requested_start_at: lower_bound,
-                requested_end_at: now, achieved_start_at: lower_bound, achieved_end_at: now, status: "complete" }
+                requested_end_at: now, achieved_start_at: lower_bound, achieved_end_at:, status: coverage_status }
             ])
           @writer.call(batch)
         end

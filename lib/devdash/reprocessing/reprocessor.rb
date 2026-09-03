@@ -14,8 +14,10 @@ module Devdash
 
       def call
         entries = @registry.each.to_a
+        groups = entries.group_by { |(_key, normalizer)| normalizer.object_id }
         run_ids = []
-        runs = entries.map do |(source, entity_type), normalizer|
+        runs = groups.values.map do |group|
+          (source, entity_type), normalizer = group.first
           run = Models::NormalizationRun.create!(
             normalizer_key: "#{source}:#{entity_type}", normalizer_version: normalizer.version,
             status: "running", started_at: Time.now.utc
@@ -26,9 +28,10 @@ module Devdash
 
         ActiveRecord::Base.transaction do
           runs.each_with_index do |run, index|
-            (source, entity_type), normalizer = entries[index]
+            group = groups.values[index]
+            normalizer = group.first.last
             normalizer.reset! if normalizer.respond_to?(:reset!)
-            records = ordered_records(source, entity_type)
+            records = ordered_records(group)
             records.each do |record|
               normalizer.call(record)
               record.update!(normalizer_version: normalizer.version)
@@ -48,10 +51,16 @@ module Devdash
 
       private
 
-      def ordered_records(source, entity_type)
-        Models::SourceRecord.where(source: source, entity_type: entity_type)
-          .order(Arel.sql("COALESCE(source_updated_at, observed_at) ASC, observed_at ASC, id ASC"))
+      def ordered_records(group)
+        entity_order = group.each_with_index.to_h { |((source, entity_type), _normalizer), index| [[source, entity_type], index] }
+        group.flat_map do |(source, entity_type), _normalizer|
+          Models::SourceRecord.where(source:, entity_type:).to_a
+        end.sort_by do |record|
+          timestamp = record.source_updated_at || record.observed_at
+          [timestamp.to_f, record.observed_at.to_f, record.entity_type.to_s,
+            entity_order.fetch([record.source, record.entity_type]), record.id]
+          end
+        end
       end
     end
-  end
 end
