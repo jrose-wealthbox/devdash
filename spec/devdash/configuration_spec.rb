@@ -42,6 +42,37 @@ RSpec.describe Devdash::Configuration do
     end
   end
 
+  it "rejects duplicate fully-qualified repository names" do
+    Dir.mktmpdir do |directory|
+      duplicate = valid_yaml.sub("name: starburstlabs/repo1", "name: starburstlabs/crm-web")
+      expect { described_class.load(path: write_config(directory, duplicate)) }
+        .to raise_error(Devdash::ConfigurationError, /repository names must be unique/)
+    end
+  end
+
+  it "rejects an empty YAML document with a configuration error" do
+    Dir.mktmpdir do |directory|
+      expect { described_class.load(path: write_config(directory, "")) }
+        .to raise_error(Devdash::ConfigurationError, /configuration must be a mapping/)
+    end
+  end
+
+  it "rejects a non-mapping repository entry with a configuration error" do
+    Dir.mktmpdir do |directory|
+      malformed = <<~YAML
+        database_path: data/devdash.sqlite3
+        github:
+          repositories:
+            - name: starburstlabs/crm-web
+              alias: crm-web
+              default: true
+            - repo1
+      YAML
+      expect { described_class.load(path: write_config(directory, malformed)) }
+        .to raise_error(Devdash::ConfigurationError, /repository entry 2 must be a mapping/)
+    end
+  end
+
   it "resolves omitted, named, fully-qualified, and all scopes" do
     Dir.mktmpdir do |directory|
       config = described_class.load(path: write_config(directory, valid_yaml))
@@ -51,6 +82,26 @@ RSpec.describe Devdash::Configuration do
       expect(config.resolve_repository_scope("all").repository_names)
         .to eq(["starburstlabs/crm-web", "starburstlabs/repo1"])
       expect(config.resolve_repository_scope("all").label).to eq("All configured repos (2)")
+    end
+  end
+
+  it "rejects an explicitly selected disabled repository" do
+    Dir.mktmpdir do |directory|
+      disabled = <<~YAML
+        database_path: data/devdash.sqlite3
+        github:
+          repositories:
+            - name: starburstlabs/crm-web
+              alias: crm-web
+              default: true
+            - name: starburstlabs/repo1
+              alias: repo1
+              enabled: false
+      YAML
+      config = described_class.load(path: write_config(directory, disabled))
+
+      expect { config.resolve_repository_scope("repo1") }
+        .to raise_error(Devdash::ConfigurationError, /unknown or disabled repository: repo1/)
     end
   end
 end
