@@ -3,8 +3,6 @@
 module Devdash
   module Models
     class Repository < BaseRecord
-      has_many :source_records, dependent: :restrict_with_exception
-
       validates :source, :full_name, :alias_name, presence: true
       validates :full_name, format: { with: %r{\A[^/\s]+/[^/\s]+\z} }
       validates :alias_name, uniqueness: true

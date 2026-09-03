@@ -7,7 +7,7 @@ module Devdash
 
       attr_readonly :collector_run_id, :source, :scope_key, :entity_type, :external_id,
         :source_updated_at, :observed_at, :api_version, :query_fingerprint,
-        :payload_hash, :payload_json
+        :payload_hash, :payload_json, :created_at, :updated_at
 
       validates :source, :scope_key, :entity_type, :external_id,
         :observed_at, :query_fingerprint, :payload_hash, :payload_json,

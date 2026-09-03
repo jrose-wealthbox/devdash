@@ -40,6 +40,32 @@ RSpec.describe "foundation models" do
     )
 
     expect { record.update!(payload_json: '{"id":"changed"}') }.to raise_error(ActiveRecord::ReadonlyAttributeError)
+    expect { record.update!(observed_at: 1.minute.ago) }.to raise_error(ActiveRecord::ReadonlyAttributeError)
+    expect { record.update!(created_at: 1.minute.ago) }.to raise_error(ActiveRecord::ReadonlyAttributeError)
+    expect { record.update!(updated_at: 1.minute.ago) }.to raise_error(ActiveRecord::ReadonlyAttributeError)
     expect { record.update!(normalizer_version: 2) }.not_to raise_error
+  end
+
+  it "enforces source-record collector-run foreign keys in the database" do
+    connect_test_database!
+
+    expect do
+      Devdash::Models::SourceRecord.create!(
+        collector_run_id: -1, source: "github", scope_key: "crm-web", entity_type: "commit",
+        external_id: "c1", observed_at: Time.current, query_fingerprint: "q1",
+        payload_hash: "h1", payload_json: '{"id":"c1"}'
+      )
+    end.to raise_error(ActiveRecord::InvalidForeignKey)
+  end
+
+  it "enforces source-identity person foreign keys in the database" do
+    connect_test_database!
+
+    expect do
+      Devdash::Models::SourceIdentity.create!(
+        person_id: -1, source: "slack", external_id: "U1",
+        first_observed_at: Time.current, last_observed_at: Time.current
+      )
+    end.to raise_error(ActiveRecord::InvalidForeignKey)
   end
 end
