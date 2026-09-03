@@ -39,6 +39,25 @@ RSpec.describe Devdash::Sources::Linear::Normalizer do
     expect(Devdash::Models::LinearIssue.find_by!(linear_id: "issue-1").active).to be(false)
   end
 
+  it "marks archived and trashed issues inactive while retaining raw archive metadata" do
+    payload = JSON.parse(File.read("spec/fixtures/linear/issue_archived.json")).fetch("data").fetch("issue")
+    record = source_record(entity_type: "linear_issue", external_id: payload.fetch("id"), payload:)
+
+    described_class.new.call(record)
+
+    issue = Devdash::Models::LinearIssue.find_by!(linear_id: payload.fetch("id"))
+    expect(issue.active).to be(false)
+    expect(JSON.parse(issue.metadata_json)).to include(
+      "archivedAt" => "2026-01-02T01:00:00Z", "trashed" => true
+    )
+  end
+
+  it "indexes Linear source lifecycle timestamps" do
+    indexed_columns = ActiveRecord::Base.connection.indexes(:linear_issues).flat_map(&:columns)
+
+    expect(indexed_columns).to include("created_at_source", "started_at_source", "canceled_at_source")
+  end
+
   it "derives changes from the source chronology when observations are replayed out of order" do
     older = source_record(entity_type: "linear_issue", external_id: "issue-1", observed_at: Time.utc(2026, 1, 3),
       source_updated_at: Time.utc(2026, 1, 2), payload: issue_payload(id: "issue-1", updated_at: "2026-01-02T00:00:00Z"))

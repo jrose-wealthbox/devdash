@@ -31,7 +31,7 @@ RSpec.describe Devdash::Sources::Linear::Client do
     end
     expect(http).to have_received(:post).with(hash_including(
       body: hash_including(
-        "query" => match(/labels\(first: 50, after: \$labelsAfter\)/),
+        "query" => match(/labels\(first: 50, after: \$labelsAfter, includeArchived: true\)/),
         "variables" => hash_including("labelsAfter" => "labels-cursor-1", "attachmentsAfter" => "attachments-cursor-1")
       )
     )).once
@@ -59,6 +59,24 @@ RSpec.describe Devdash::Sources::Linear::Client do
     expect { described_class.new(http:, api_key: "secret").each_issue { |_| } }.to raise_error(Devdash::Error, /AUTH: forbidden/)
   end
 
+  it "extracts GraphQL error codes from extensions" do
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(instance_double(Devdash::Transports::HttpJson::Response,
+      body: { "errors" => [{ "message" => "forbidden", "extensions" => { "code" => "AUTH_EXT" } }] }))
+
+    expect { described_class.new(http:, api_key: "secret").each_issue { |_| } }
+      .to raise_error(Devdash::Error, /AUTH_EXT: forbidden/)
+  end
+
+  it "requires pageInfo on paginated connections" do
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(instance_double(Devdash::Transports::HttpJson::Response,
+      body: { "data" => { "issues" => { "nodes" => [] } } }))
+
+    expect { described_class.new(http:, api_key: "secret").each_issue { |_| } }
+      .to raise_error(Devdash::Error, /missing pageInfo/)
+  end
+
   it "uses a dedicated issue lookup so archived issues are refreshable" do
     responses = [
       instance_double(Devdash::Transports::HttpJson::Response,
@@ -72,11 +90,13 @@ RSpec.describe Devdash::Sources::Linear::Client do
     issue = described_class.new(http:, api_key: "secret").issue(id: "issue-archived")
 
     expect(issue.fetch("id")).to eq("issue-archived")
+    expect(issue.fetch("archivedAt")).to eq("2026-01-02T01:00:00Z")
+    expect(issue.fetch("trashed")).to be(true)
     expect(http).to have_received(:post).with(hash_including(
       body: hash_including("query" => match(/issue\(id: \$id\)/), "variables" => { "id" => "issue-archived" })
     )).once
     expect(http).to have_received(:post).with(hash_including(
-      body: hash_including("query" => match(/labels\(first: 50, after: \$labelsAfter\)/))
+      body: hash_including("query" => match(/labels\(first: 50, after: \$labelsAfter, includeArchived: true\)/))
     )).once
   end
 
@@ -89,7 +109,30 @@ RSpec.describe Devdash::Sources::Linear::Client do
 
     expect(http).to have_received(:post) do |request|
       expect(request.fetch(:body).fetch("query")).not_to match(/\bactive\b/)
+      expect(request.fetch(:body).fetch("query")).to include("archivedAt", "trashed")
     end
+  end
+
+  it "includes archived relation and history nodes" do
+    expect(described_class::ISSUE_RELATIONS_QUERY).to include(
+      "labels(first: 50, after: $labelsAfter, includeArchived: true)",
+      "attachments(first: 50, after: $attachmentsAfter, includeArchived: true)"
+    )
+    expect(described_class::HISTORY_QUERY).to include("history(first: 100, after: $after, includeArchived: true)")
+  end
+
+  it "raises a typed error when relation hydration loses the issue object" do
+    responses = [
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: JSON.parse(File.read("spec/fixtures/linear/issue_listing_single.json"))),
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: { "data" => { "issue" => nil } })
+    ]
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(*responses)
+
+    expect { described_class.new(http:, api_key: "secret").each_issue { |_| } }
+      .to raise_error(Devdash::Error, /missing data\.issue.*relation/i)
   end
 
   it "requests material history changes and their raw JSON metadata" do

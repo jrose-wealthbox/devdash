@@ -31,14 +31,24 @@ module Devdash
           lower_bound = [since, (cursor_before && Time.iso8601(cursor_before) - OVERLAP)].compact.max
           issues = {}
           fetched_ids = {}
-          @client.each_issue(updated_since: lower_bound) do |issue|
-            id = issue.fetch("id")
-            fetched_ids[id] = true
-            issues[id] = issue
+          relation_hydration_failures = []
+          begin
+            @client.each_issue(updated_since: lower_bound) do |issue|
+              id = issue.fetch("id")
+              fetched_ids[id] = true
+              issues[id] = issue
+            end
+          rescue Client::RelationHydrationError => error
+            relation_hydration_failures << error
           end
           missing_active_ids = []
           Models::LinearIssue.where(active: true).pluck(:linear_id).each do |id|
-            issue = @client.issue(id: id)
+            begin
+              issue = @client.issue(id: id)
+            rescue Client::RelationHydrationError => error
+              relation_hydration_failures << error
+              issue = nil
+            end
             if issue
               fetched_ids[id] = true
               issues[id] = issue
@@ -56,7 +66,7 @@ module Devdash
             observations << observation("linear_issue_history", "#{issue.fetch("id")}:#{Digest::SHA256.hexdigest(Ingestion::CanonicalJson.dump(history))}",
               { "issue_id" => issue.fetch("id"), "history" => history }, issue["updatedAt"], now, "issue_history")
           end
-          coverage_status = missing_active_ids.empty? ? "complete" : "partial"
+          coverage_status = missing_active_ids.empty? && relation_hydration_failures.empty? ? "complete" : "partial"
           cursor_after = coverage_status == "complete" ? next_cursor(cursor_before, issues.values, now) : cursor_before
           achieved_end_at = coverage_status == "complete" ? now : nil
           batch = Ingestion::Batch.new(source: "linear", scope_key: "global", cursor_type: "updated_at",

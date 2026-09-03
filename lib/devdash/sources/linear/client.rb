@@ -7,11 +7,20 @@ module Devdash
   module Sources
     module Linear
       class Client
+        class RelationHydrationError < Devdash::Error
+          attr_reader :issue_id
+
+          def initialize(issue_id)
+            @issue_id = issue_id
+            super("Linear response missing data.issue during relation hydration for #{issue_id}")
+          end
+        end
+
         ISSUE_PAGE_SIZE = 50
         RELATION_PAGE_SIZE = 50
 
         ISSUE_NODE_FIELDS = <<~GRAPHQL.freeze
-          id identifier title url createdAt updatedAt startedAt completedAt canceledAt estimate
+          id identifier title url createdAt updatedAt startedAt completedAt canceledAt archivedAt trashed estimate
           team { id name } project { id name } state { id name type }
           creator { id name email } assignee { id name email }
         GRAPHQL
@@ -57,11 +66,11 @@ module Devdash
         ISSUE_RELATIONS_QUERY = <<~GRAPHQL.freeze
           query IssueRelations($id: String!, $labelsAfter: String, $attachmentsAfter: String) {
             issue(id: $id) {
-              labels(first: #{RELATION_PAGE_SIZE}, after: $labelsAfter) {
+              labels(first: #{RELATION_PAGE_SIZE}, after: $labelsAfter, includeArchived: true) {
                 nodes { id name }
                 pageInfo { hasNextPage endCursor }
               }
-              attachments(first: #{RELATION_PAGE_SIZE}, after: $attachmentsAfter) {
+              attachments(first: #{RELATION_PAGE_SIZE}, after: $attachmentsAfter, includeArchived: true) {
                 nodes { id title url }
                 pageInfo { hasNextPage endCursor }
               }
@@ -71,7 +80,7 @@ module Devdash
 
         HISTORY_QUERY = <<~GRAPHQL.freeze
           query IssueHistory($id: String!, $after: String) {
-            issue(id: $id) { history(first: 100, after: $after) {
+            issue(id: $id) { history(first: 100, after: $after, includeArchived: true) {
               nodes { #{HISTORY_NODE_FIELDS} }
               pageInfo { hasNextPage endCursor }
             } }
@@ -127,14 +136,17 @@ module Devdash
               "id" => id, "labelsAfter" => cursors.fetch("labels"), "attachmentsAfter" => cursors.fetch("attachments")
             })
             issue = body.dig("data", "issue")
-            break unless issue
+            raise RelationHydrationError, id unless issue.is_a?(Hash)
 
             %w[labels attachments].each do |name|
               next if finished.fetch(name)
 
-              connection = issue.fetch(name, {})
-              nodes.fetch(name).concat(Array(connection["nodes"]))
-              page = connection.fetch("pageInfo", {})
+              connection = issue[name]
+              raise Devdash::Error, "Linear response missing #{name} relation connection for issue #{id}" unless connection.is_a?(Hash)
+              relation_nodes = connection["nodes"]
+              raise Devdash::Error, "Linear response missing #{name} relation nodes for issue #{id}" unless relation_nodes.is_a?(Array)
+              nodes.fetch(name).concat(relation_nodes)
+              page = page_info!(connection)
               if page["hasNextPage"]
                 cursors[name] = page["endCursor"]
                 raise Devdash::Error, "Linear response missing pagination cursor" if cursors[name].to_s.empty?
@@ -154,7 +166,12 @@ module Devdash
           body = response.body
           errors = body.is_a?(Hash) ? body["errors"] : nil
           if errors && !errors.empty?
-            details = Array(errors).filter_map { |error| error.is_a?(Hash) ? [error["code"], error["message"]].compact.join(": ") : nil }
+            details = Array(errors).filter_map do |error|
+              next unless error.is_a?(Hash)
+
+              code = error["code"] || error.dig("extensions", "code")
+              [code, error["message"]].compact.join(": ")
+            end
             raise Devdash::Error, "Linear GraphQL error: #{details.join("; ")}".slice(0, 500)
           end
           body
@@ -167,12 +184,24 @@ module Devdash
             body = post(query:, variables: vars)
             connection = path.inject(body) { |value, key| value.is_a?(Hash) ? value[key] : nil }
             raise Devdash::Error, "Linear response missing connection" unless connection.is_a?(Hash)
-            Array(connection["nodes"]).each { |node| yield node }
-            page = connection.fetch("pageInfo", {})
+            nodes = connection["nodes"]
+            raise Devdash::Error, "Linear response missing connection nodes" unless nodes.is_a?(Array)
+            nodes.each { |node| yield node }
+            page = page_info!(connection)
             break unless page["hasNextPage"]
             cursor = page["endCursor"]
             raise Devdash::Error, "Linear response missing pagination cursor" if cursor.to_s.empty?
           end
+        end
+
+        def page_info!(connection)
+          page = connection["pageInfo"]
+          raise Devdash::Error, "Linear response missing pageInfo" unless page.is_a?(Hash)
+          unless [true, false].include?(page["hasNextPage"])
+            raise Devdash::Error, "Linear response missing pageInfo.hasNextPage"
+          end
+
+          page
         end
       end
     end

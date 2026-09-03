@@ -134,6 +134,7 @@ module Devdash
         end
 
         def active_for(payload)
+          return false if payload["archivedAt"] || payload["trashed"]
           return false if payload["completedAt"] || payload["canceledAt"]
 
           !TERMINAL_STATE_TYPES.include?(payload.dig("state", "type").to_s.downcase)

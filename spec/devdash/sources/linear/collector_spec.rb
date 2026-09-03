@@ -75,6 +75,27 @@ RSpec.describe Devdash::Sources::Linear::Collector do
     expect(batch.coverages).to all(include(status: "partial", achieved_end_at: nil))
   end
 
+  it "marks relation hydration failures partial and retains the prior cursor" do
+    cursor_value = "2026-01-03T00:00:00Z"
+    Devdash::Models::SyncCursor.create!(source: "linear", scope_key: "global", cursor_type: "updated_at", cursor_value: cursor_value)
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: JSON.parse(File.read("spec/fixtures/linear/issue_listing_single.json"))),
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: { "data" => { "issue" => nil } })
+    )
+    client = Devdash::Sources::Linear::Client.new(http:, api_key: "secret")
+    writer = instance_double(Devdash::Ingestion::Writer)
+    batch = nil
+    allow(writer).to receive(:call) { |value| batch = value }
+
+    described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 4) }).call(since: Time.utc(2026, 1, 1))
+
+    expect(batch.cursor_after).to eq(cursor_value)
+    expect(batch.coverages).to all(include(status: "partial", achieved_end_at: nil))
+  end
+
   it "loads its Linear model dependency when the collector is required directly" do
     expect(Devdash::Models::LinearIssue).to be_a(Class)
   end
