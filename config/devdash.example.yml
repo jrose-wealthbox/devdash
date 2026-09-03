@@ -1,0 +1,14 @@
+database_path: data/devdash.sqlite3
+
+github:
+  repositories:
+    - name: starburstlabs/crm-web
+      alias: crm-web
+      default: true
+      enabled: true
+    - name: starburstlabs/repo1
+      alias: repo1
+      enabled: true
+    - name: starburstlabs/repo2
+      alias: repo2
+      enabled: true

@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/devdash"
+
+if ["-h", "--help"].include?(ARGV.first) || ARGV.empty?
+  puts "Usage: devdash COMMAND [options]"
+  puts "Commands: sync, backfill, report, reprocess, rebuild-derived, doctor"
+  exit 0
+end
+
+warn "Unknown command: #{ARGV.first}"
+exit 64

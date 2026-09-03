@@ -1,0 +1,8 @@
+/.bundle/
+/vendor/bundle/
+/tmp/
+/data/*.sqlite3
+/data/*.sqlite3-*
+/config/devdash.yml
+/config/people.yml
+/.env

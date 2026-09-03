@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+mise exec -- bundle install
+mkdir -p data tmp
+mise exec -- bundle exec ruby bin/devdash --help
