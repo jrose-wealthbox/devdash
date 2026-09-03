@@ -8,7 +8,7 @@
 
 ## Summary
 
-Devdash is a local Ruby application that incrementally collects engineering activity from GitHub, Linear, and Slack into SQLite, then renders command-line reports for rolling 7-, 30-, and 180-day windows. Each report compares the owner with:
+Devdash is a local Ruby application that incrementally collects engineering activity from GitHub, Linear, and Slack into SQLite, then renders command-line reports for rolling 7-, 30-, and 180-day windows. Multiple GitHub repositories are configured explicitly, exactly one is the default report scope, and an `all` scope aggregates every enabled configured repository. Each report compares the owner with:
 
 1. the immediately preceding equal-length window; and
 2. engineers in a similar role and level during the same window.
@@ -22,6 +22,7 @@ The product will not calculate a composite performance score. Activity counts su
 - Produce a private, local report for rolling 7-, 30-, and 180-day windows.
 - Show the owner's value, prior-period value and delta, data coverage, and a peer distribution/sample size wherever the comparison is valid.
 - Group repository-related metrics by repository.
+- Allow reports and backfills to select the default repository, any configured repository, or all configured repositories.
 - Collect data idempotently and avoid unnecessary network requests on repeated reports.
 - Preserve enough source evidence to correct identity mappings and revise metric definitions without refetching all history.
 - Make partial or stale data visible rather than silently reporting incomplete results.
@@ -190,16 +191,54 @@ docs/superpowers/specs/
 
 Files containing credentials, the SQLite database, report caches, and local identity overrides are ignored by Git.
 
+## Repository Configuration and Scope
+
+Repositories are an explicit configuration boundary. Devdash does not scan every accessible GitHub repository unless each repository is enabled in configuration.
+
+```yaml
+github:
+  repositories:
+    - name: starburstlabs/crm-web
+      alias: crm-web
+      default: true
+      enabled: true
+    - name: starburstlabs/repo1
+      alias: repo1
+      enabled: true
+    - name: starburstlabs/repo2
+      alias: repo2
+      enabled: true
+```
+
+Configuration rules:
+
+- Repository identity always uses the full `owner/name`; a short alias is presentation and CLI convenience.
+- Exactly one enabled repository must have `default: true`.
+- Aliases must be unique and cannot be `all`.
+- `all` is a virtual report scope containing every enabled configured repository; it is not stored as a fake repository row.
+- Disabled repositories retain previously collected history but are omitted from sync, `all`, and normal report selection until explicitly re-enabled.
+- Reports label the aggregate `All configured repos (N)` so it cannot be mistaken for every repository in the GitHub organization.
+
+Omitting `--repo` selects the configured default. Both aliases and full names are accepted. Examples:
+
+```text
+devdash report --window 30d                  # crm-web
+devdash report --window 30d --repo repo1
+devdash report --window 30d --repo all       # all configured repos
+```
+
+An internal `RepositoryScope` value contains the resolved repository IDs, display label, and a stable configuration hash. The same scope object is used by synchronization, metric queries, peer comparison, coverage checks, and report caching.
+
 ## Component Responsibilities
 
 ### CLI
 
 The CLI exposes these user workflows:
 
-- `devdash sync`: run all enabled collectors incrementally.
-- `devdash sync SOURCE`: run one collector.
-- `devdash backfill --days N`: explicitly extend historical coverage.
-- `devdash report --window 7d|30d|180d`: render a terminal report using local data only.
+- `devdash sync`: run all enabled collectors incrementally across all enabled configured repositories.
+- `devdash sync SOURCE`: run one collector; the GitHub collector accepts `--repo SCOPE`, while Slack and Linear remain organization/workspace scoped.
+- `devdash backfill --days N [--repo SCOPE]`: explicitly extend historical coverage; repository scope limits GitHub work, while required global Linear/Slack coverage remains independently tracked.
+- `devdash report --window 7d|30d|180d [--repo SCOPE]`: render a terminal report using local data only; omission selects the default repository.
 - `devdash doctor`: validate credentials, source access, identity coverage, cursors, and data freshness without changing source systems.
 
 `report` never performs network access implicitly. A repeat report is therefore fast and cannot unexpectedly consume API quota.
@@ -248,7 +287,7 @@ Slack titles are normalized into a role and level, for example:
 
 Role assignments are effective-dated. The peer cohort for a report is the set of active human engineers whose normalized role and level match the owner at the report window's end. Bots, guests, deactivated users, unresolved people, and explicit exclusions are omitted.
 
-Repository-level comparisons use only matching peers with activity in that repository during the trailing 180 days and always display the resulting sample size. Insufficient samples are labeled rather than extrapolated.
+For a single repository, comparisons use only matching peers with activity in that repository during the trailing 180 days. For `all`, the eligible cohort is the union of matching peers active in at least one configured repository during the trailing 180 days. Each peer's facts are aggregated across the exact same repository set before distribution statistics are calculated; raw events from all peers are never pooled together. Every comparison displays its sample size, and insufficient samples are labeled rather than extrapolated.
 
 ### Metric registry
 
@@ -311,13 +350,17 @@ Stores original title, normalized role, normalized level, source, `effective_fro
 
 #### `repositories`
 
-Stores GitHub repository identity, full name, default branch, active/archived state, and configured inclusion/exclusion metadata.
+Stores GitHub repository identity, full name, unique configured alias, Git default branch, enabled/default-report flags, active/archived state, and configured inclusion/exclusion metadata. SQLite enforces at most one default row; configuration validation requires exactly one enabled default.
 
 #### `collector_runs`
 
 Stores source, start/end timestamps, status, cursor before/after, requested and achieved coverage, page/record counts, retry counts, and sanitized error details.
 
 Statuses are `running`, `succeeded`, `partial`, or `failed`. An interrupted `running` record is reported as stale on the next invocation.
+
+#### `collector_run_coverages`
+
+Stores per-run coverage by repository/source scope and entity type. For example, GitHub PR coverage can succeed for `crm-web` while commit coverage for `repo1` fails. An `all` report is complete only when every included repository has sufficient coverage for every source entity required by the metric.
 
 #### `sync_cursors`
 
@@ -328,23 +371,24 @@ Stores one opaque cursor per collector and scope, plus its last successful updat
 Stores versioned raw observations with:
 
 - source and entity type;
+- source scope key, such as the repository ID for repository-bound GitHub objects;
 - stable external ID;
 - source update timestamp;
 - observation timestamp;
 - canonical payload hash; and
 - JSON payload.
 
-The unique key `(source, entity_type, external_id, payload_hash)` makes repeated identical fetches no-ops while preserving materially changed source versions.
+The unique key `(source, scope_key, entity_type, external_id, payload_hash)` makes repeated identical fetches no-ops while preserving materially changed source versions and avoiding collisions when the same commit SHA exists in multiple repositories.
 
 #### `metric_definitions` and `report_snapshots`
 
-`metric_definitions` records metric key, version, unit, description, signal role, measurement scope, and collection mode. `metric_framework_mappings` associates a metric version with zero or more framework dimensions without forcing one framework's taxonomy into another. `report_snapshots` optionally caches rendered/structured results using window, cohort-definition hash, metric versions, and source-watermark hash. Because reports are local and cheap, this cache is an optimization; source caching and idempotent ingestion provide the required network savings.
+`metric_definitions` records metric key, version, unit, description, signal role, measurement scope, and collection mode. `metric_framework_mappings` associates a metric version with zero or more framework dimensions without forcing one framework's taxonomy into another. `report_snapshots` optionally caches rendered/structured results using window, repository-scope hash, cohort-definition hash, metric versions, and source-watermark hash. Because reports are local and cheap, this cache is an optimization; source caching and idempotent ingestion provide the required network savings.
 
 ### GitHub tables
 
 #### `pull_requests`
 
-Stores repository, number, author, state, draft state, opened/closed/merged timestamps, merge commit, additions, deletions, changed-file count, base branch, and source timestamps.
+Stores repository, number, GitHub node ID, author, state, draft state, opened/closed/merged timestamps, merge commit, additions, deletions, changed-file count, base branch, and source timestamps. Repository plus PR number is unique even when a globally unique node ID is available.
 
 #### `pull_request_events`
 
@@ -360,7 +404,7 @@ Stores per-file additions, deletions, status, and exclusion category for the fin
 
 #### `commits`
 
-Stores repository, SHA, author/committer identities, authored/committed timestamps, parent count, default-branch reachability observation, and association with a pull request when known.
+Stores repository, SHA, author/committer identities, authored/committed timestamps, parent count, default-branch reachability observation, and association with a pull request when known. Repository plus SHA is the stable identity because the same Git object may exist in more than one configured repository.
 
 #### `commit_file_stats`
 
@@ -384,7 +428,7 @@ Links issues to repositories with evidence type, confidence, and primary flag. E
 2. explicit configured Linear project/team/label mapping; and
 3. manual override.
 
-An issue linked to multiple repositories is grouped under `multi-repo` unless a primary repository is explicitly resolved. Unresolved issues remain under `unmapped`; totals count every issue once.
+An issue linked to multiple repositories is grouped under `multi-repo` unless a primary repository is explicitly resolved. A single-repository report uses only primary links for its main ticket metrics and lists related unresolved multi-repository issues separately. An `all` report includes the `multi-repo` and `unmapped` buckets and counts each issue once.
 
 ### Planned additive tables for known future sources
 
@@ -444,6 +488,28 @@ Bot reviews, pending reviews, deleted identities, and individual line comments a
 
 Ticket metrics are grouped using `issue_repository_links`, with `multi-repo` and `unmapped` displayed explicitly.
 
+## Repository-scope Aggregation
+
+Repository-aware metrics accept a resolved `RepositoryScope` rather than a nullable repository argument.
+
+### Single-repository scope
+
+- Facts are filtered to the selected repository.
+- The peer cohort is role/level-matched and active in that repository during the trailing 180 days.
+- Linear main metrics include issues whose primary repository is the selected repository.
+- Global metrics without a repository dimension are shown separately and labeled `global`.
+
+### `all` scope
+
+- Facts are filtered to the union of enabled configured repositories.
+- Owner and each peer are aggregated independently across that same union before peer medians, ranges, or percentiles are calculated.
+- Counts use distinct source identities within their repository-qualified keys. In particular, commit identity is `(repository_id, sha)`, not SHA alone.
+- Linear issues are counted once even when they have multiple repository links; unresolved multi-repository and unmapped issues remain visible.
+- The report includes both the cross-repository aggregate and a per-repository breakdown.
+- The aggregate is marked partial if any included repository lacks required source coverage.
+
+For count metrics, an eligible peer with no matching activity has a value of zero. For duration metrics, a peer with no completed observation is excluded from that metric's distribution and the reduced sample size is shown. This prevents missing durations from becoming artificial zeroes.
+
 ## Comparison Semantics
 
 For a requested duration `D` ending at report time `T`:
@@ -453,7 +519,7 @@ For a requested duration `D` ending at report time `T`:
 
 The initial backfill must therefore cover at least 360 days to render both halves of the 180-day comparison. A configurable safety margin allows late updates.
 
-The peer comparison uses the same current window and metric definition. For repository-grouped metrics, peer distributions use the repository-active cohort defined above. The CLI always prints `n`; when fewer than three peers have comparable observations, it prints `insufficient peer sample` rather than a percentile.
+The peer comparison uses the same current window, metric definition, and repository scope. For repository-aware metrics, peer distributions use the scope-specific cohort defined above. The CLI always prints `n`; when fewer than three peers have comparable observations, it prints `insufficient peer sample` rather than a percentile.
 
 Directionless metrics such as meeting load, commits, changed lines, and AI spend do not receive a good/bad percentile. Their distributions are descriptive.
 
@@ -463,7 +529,7 @@ The terminal report is organized by EngThrive dimension, and each row is visibly
 
 ### Initial backfill
 
-The first synchronization fetches at least 360 days plus a configurable safety margin. It records actual source coverage independently for each collector and entity type.
+The first synchronization fetches at least 360 days plus a configurable safety margin for every enabled configured repository. It records actual source coverage independently for each collector, repository scope, and entity type.
 
 ### Incremental collection
 
@@ -474,6 +540,8 @@ Each daily run combines:
 - explicit refresh of all open PRs and active Linear issues, regardless of age.
 
 Old open items must remain refreshable because they can merge or complete inside the current report window.
+
+GitHub cursors and retry state are repository-qualified so one repository's failure does not discard successful transactions for another. `devdash sync --repo all` expands to independently observable repository sync scopes rather than one opaque organization-wide run.
 
 ### Idempotency
 
@@ -497,6 +565,7 @@ Absence from a paginated response is not deletion evidence. Records are tombston
 - A successful collector does not hide another collector's failure.
 - Reports show each source's last successful run, achieved coverage, and staleness.
 - Metrics whose required source coverage is incomplete are labeled partial or unavailable.
+- `all` reports identify each repository responsible for incomplete aggregate coverage.
 - Unresolved identities and repository mappings are counted and surfaced by `devdash doctor`.
 - Raw payload retention allows normalization bugs to be repaired locally.
 
@@ -519,6 +588,8 @@ Absence from a paginated response is not deletion evidence. Records are tombston
 - Identity resolution, conflicting evidence, manual overrides, and person merges.
 - Slack-title role normalization and effective-date selection.
 - Window boundaries, current/previous comparisons, percentile behavior, and insufficient samples.
+- Default, single-repository, and `all` scope resolution, including reserved/duplicate aliases.
+- Per-person cross-repository aggregation before cohort distribution calculation.
 - Metric role/scope/framework metadata and framework-coverage calculation.
 - Repository mapping priority, multi-repository handling, and unmapped totals.
 - Exclusion classification for generated, vendored, and lockfile paths.
@@ -543,11 +614,13 @@ Every collector is tested against recorded, sanitized fixtures for:
 - GitHub review-ID deduplication across event and comment feeds.
 - Linear transitions without actors.
 - Full 360-day current/previous report coverage.
+- Independent per-repository cursor advancement and partial `all` coverage.
+- Distinct cross-repository aggregation, including identical commit SHAs in different repositories.
 - Report-cache invalidation after data or metric-version changes.
 
 ### Report tests
 
-Sanitized golden outputs verify the CLI's EngThrive sections, signal-role labels, framework coverage, columns, repository grouping, sample sizes, partial-data warnings, and stable formatting. Tests assert that activity signals and service-scoped DORA metrics cannot be rendered as individual performance rankings. Metric fixture tests use hand-calculated expected values rather than snapshots alone.
+Sanitized golden outputs verify the CLI's default/single/`all` repository selection, EngThrive sections, signal-role labels, framework coverage, columns, repository grouping, sample sizes, partial-data warnings, and stable formatting. Tests assert that activity signals and service-scoped DORA metrics cannot be rendered as individual performance rankings. Metric fixture tests use hand-calculated expected values rather than snapshots alone.
 
 ### Live smoke tests
 
@@ -558,6 +631,7 @@ Opt-in smoke tests validate credentials and minimal read access for each source 
 ### Version 1: foundation and core dashboard
 
 - Ruby project foundation, configuration, Active Record, and SQLite migrations.
+- Multiple configured repositories, exactly one default, and explicit single/`all` repository scopes.
 - Collector/transport/ingestion contracts and provenance tables.
 - Slack people/title collection and local identity overrides.
 - GitHub repository, PR, review, commit, and file-stat collection.
@@ -589,12 +663,16 @@ Opt-in smoke tests validate credentials and minimal read access for each source 
 ## Acceptance Criteria for Version 1
 
 - Running `devdash sync` twice against unchanged fixtures produces identical normalized rows and no duplicated events.
+- Configuration accepts multiple repositories, rejects zero/multiple defaults and reserved/duplicate aliases, and resolves omitted `--repo` to the default.
+- For reports, `--repo crm-web`, any other enabled configured alias/full name, and `--repo all` select the expected repository set.
 - A failed page or normalization step cannot advance a cursor or claim complete coverage.
+- Failure in one repository is visible without discarding successfully committed data for other repositories, and makes an affected `all` metric partial.
 - A 180-day report can compare against the preceding 180 days after the initial backfill.
 - GitHub metrics are grouped by repository and distinguish PR-shipped lines from direct-push lines.
 - Review counts deduplicate by review ID and exclude line-comment inflation.
 - Linear metrics distinguish creator attribution, assignee-at-completion attribution, and unknown transition actors.
 - Every metric shows current, previous, delta, peer distribution/sample size when valid, and source coverage.
+- `all` reports aggregate each person across the same configured repository set before calculating peer distributions, count multi-repository Linear issues once, and include a per-repository breakdown.
 - Every metric declares its signal role, measurement scope, collection mode, and applicable framework mappings.
 - Reports are organized by EngThrive, expose SPACE/DevEx coverage gaps, and never rank individual engineers with activity-only or service-scoped DORA signals.
 - Slack titles produce an inspectable normalized cohort, and local overrides can correct any match or title classification.
