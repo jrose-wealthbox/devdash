@@ -1,0 +1,106 @@
+{
+  "ok": true,
+  "members": [
+    {
+      "id": "U001",
+      "team_id": "T001",
+      "name": "alex-owner",
+      "deleted": false,
+      "color": "36a64f",
+      "real_name": "Alex Owner",
+      "tz": "America/New_York",
+      "tz_label": "Eastern Daylight Time",
+      "tz_offset": -14400,
+      "profile": {
+        "avatar_hash": "hash001",
+        "status_text": "",
+        "status_emoji": "",
+        "real_name": "Alex Owner",
+        "display_name": "Alex",
+        "email": "alex.owner@example.test",
+        "image_24": "https://example.test/avatar/001-24.png",
+        "image_32": "https://example.test/avatar/001-32.png",
+        "image_48": "https://example.test/avatar/001-48.png",
+        "image_72": "https://example.test/avatar/001-72.png",
+        "image_192": "https://example.test/avatar/001-192.png",
+        "image_512": "https://example.test/avatar/001-512.png",
+        "title": "Staff Software Engineer",
+        "phone": "",
+        "skype": ""
+      },
+      "is_admin": false,
+      "is_owner": true,
+      "is_primary_owner": false,
+      "is_restricted": false,
+      "is_ultra_restricted": false,
+      "is_bot": false,
+      "updated": 1756890000
+    },
+    {
+      "id": "U002",
+      "team_id": "T001",
+      "name": "sam-peer",
+      "deleted": false,
+      "color": "e7392d",
+      "real_name": "Sam Peer",
+      "tz": "America/Los_Angeles",
+      "tz_label": "Pacific Daylight Time",
+      "tz_offset": -25200,
+      "profile": {
+        "avatar_hash": "hash002",
+        "status_text": "",
+        "status_emoji": "",
+        "real_name": "Sam Peer",
+        "display_name": "Sam",
+        "email": "sam.peer@example.test",
+        "image_24": "https://example.test/avatar/002-24.png",
+        "title": "Software Engineer",
+        "phone": "",
+        "skype": ""
+      },
+      "is_admin": false,
+      "is_owner": false,
+      "is_primary_owner": false,
+      "is_restricted": false,
+      "is_ultra_restricted": false,
+      "is_bot": false,
+      "updated": 1756890060
+    },
+    {
+      "id": "U003",
+      "team_id": "T001",
+      "name": "build-bot",
+      "deleted": false,
+      "real_name": "Build Bot",
+      "profile": {
+        "display_name": "Build Bot",
+        "real_name": "Build Bot",
+        "email": "build.bot@example.test",
+        "title": "Automation"
+      },
+      "is_restricted": false,
+      "is_ultra_restricted": false,
+      "is_bot": true,
+      "updated": 1756890120
+    },
+    {
+      "id": "U004",
+      "team_id": "T001",
+      "name": "guest-peer",
+      "deleted": false,
+      "real_name": "Guest Peer",
+      "profile": {
+        "display_name": "Guest",
+        "real_name": "Guest Peer",
+        "email": "guest.peer@example.test",
+        "title": "Contractor"
+      },
+      "is_restricted": true,
+      "is_ultra_restricted": false,
+      "is_bot": false,
+      "updated": 1756890180
+    }
+  ],
+  "cache_ts": 1756890200,
+  "response_metadata": { "next_cursor": "page-two" }
+}
