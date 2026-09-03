@@ -3,4 +3,5 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mise exec -- bundle install
 mkdir -p data tmp
+mise exec -- bundle exec ruby -Ilib -e 'require "./lib/devdash"; configuration = Devdash::Configuration.load; Devdash::Database.connect!(path: configuration.database_path); Devdash::Database.migrate!'
 mise exec -- bundle exec ruby bin/devdash --help

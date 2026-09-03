@@ -3,6 +3,7 @@
 require "tmpdir"
 require "webmock/rspec"
 require_relative "../lib/devdash"
+require_relative "support/database"
 
 RSpec.configure do |config|
   config.disable_monkey_patching!
