@@ -36,7 +36,7 @@ module Devdash
 
           run.update!(status: "succeeded", finished_at: Time.now.utc, record_count: record_count)
           run
-        rescue Exception => error # rubocop:disable Lint/救済Exception
+        rescue StandardError => error
           run.update!(
             status: "failed", finished_at: Time.now.utc,
             error_class: error.class.name, error_message: sanitize(error.message)
@@ -86,14 +86,31 @@ module Devdash
       end
 
       def upsert_cursor!(batch)
-        cursor = Models::SyncCursor.create_or_find_by!(
-          source: batch.source, scope_key: batch.scope_key, cursor_type: batch.cursor_type
-        )
-        cursor.update!(cursor_value: batch.cursor_after, last_succeeded_at: Time.now.utc)
+        identity = { source: batch.source, scope_key: batch.scope_key, cursor_type: batch.cursor_type }
+        cursor = Models::SyncCursor.find_by(identity)
+        if cursor
+          updated = Models::SyncCursor.where(id: cursor.id, cursor_value: batch.cursor_before).update_all(
+            cursor_value: batch.cursor_after, last_succeeded_at: Time.now.utc, updated_at: Time.now.utc
+          )
+          raise_stale_cursor!(batch) unless updated == 1
+        else
+          Models::SyncCursor.create!(identity.merge(
+            cursor_value: batch.cursor_after, last_succeeded_at: Time.now.utc
+          ))
+        end
+      rescue ActiveRecord::RecordNotUnique
+        raise_stale_cursor!(batch)
       end
 
       def coverage_attributes(coverage, batch)
-        coverage.to_h.merge(scope_type: "configured", scope_key: batch.scope_key)
+        attributes = coverage.to_h
+        attributes[:scope_type] = "configured" unless attributes.key?(:scope_type) || attributes.key?("scope_type")
+        attributes[:scope_key] = batch.scope_key unless attributes.key?(:scope_key) || attributes.key?("scope_key")
+        attributes
+      end
+
+      def raise_stale_cursor!(batch)
+        raise StaleCursorError, "cursor changed for #{batch.source}/#{batch.scope_key}"
       end
 
       def sanitize(message)

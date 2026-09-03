@@ -65,4 +65,62 @@ RSpec.describe Devdash::Ingestion::Writer do
       observation("secret").with(payload: { "Authorization" => "Bearer secret" })
     }.to raise_error(ArgumentError)
   end
+
+  it "rejects nested secret-like payload keys" do
+    expect {
+      Devdash::Ingestion::SourceObservation.new(
+        entity_type: "thing", external_id: "nested-secret", source_updated_at: nil,
+        observed_at: Time.utc(2026, 9, 3, 12), api_version: "v1",
+        query_fingerprint: "query", payload: { "metadata" => [{ "X-API-KEY" => "secret" }] }
+      )
+    }.to raise_error(ArgumentError)
+  end
+
+  it "preserves explicit coverage scope fields" do
+    scoped_batch = batch.with(
+      coverages: [{ scope_type: "repository", scope_key: "crm-web", entity_type: "thing", status: "complete" }]
+    )
+
+    writer.call(scoped_batch)
+
+    coverage = Devdash::Models::CollectorRunCoverage.last
+    expect(coverage.scope_type).to eq("repository")
+    expect(coverage.scope_key).to eq("crm-web")
+  end
+
+  it "owns immutable nested observations and coverages" do
+    payload = { "nested" => [{ "value" => 1 }] }
+    coverage = { scope_type: "repository", scope_key: "crm-web", entity_type: "thing", status: "complete",
+                 metadata: { "repos" => ["crm-web"] } }
+    observation_value = observation("owned").with(payload: payload)
+    owned_batch = batch.with(observations: [observation_value], coverages: [coverage])
+
+    payload["nested"][0]["value"] = 99
+    coverage[:metadata]["repos"] << "other-repo"
+    coverage[:scope_key] = "other-repo"
+
+    expect(owned_batch.observations).to be_frozen
+    expect(owned_batch.coverages).to be_frozen
+    expect(owned_batch.observations.first.payload["nested"][0]["value"]).to eq(1)
+    expect(owned_batch.coverages.first[:metadata]["repos"]).to eq(["crm-web"])
+    expect(owned_batch.coverages.first[:scope_key]).to eq("crm-web")
+  end
+
+  it "rejects a cursor race between validation and atomic advancement" do
+    Devdash::Models::SyncCursor.create!(
+      source: "fake", scope_key: "global", cursor_type: "opaque", cursor_value: "cursor-0"
+    )
+    raced_batch = batch.with(cursor_before: "cursor-0", cursor_after: "cursor-1")
+    allow(writer).to receive(:verify_cursor!).and_wrap_original do |original, candidate|
+      original.call(candidate)
+      Devdash::Models::SyncCursor.find_by!(source: "fake", scope_key: "global").update!(cursor_value: "raced")
+    end
+
+    expect { writer.call(raced_batch) }.to raise_error(Devdash::Ingestion::StaleCursorError)
+    expect(Devdash::Models::SourceRecord.count).to eq(0)
+    # The simulated competing update is part of the transaction and therefore
+    # rolls back with the failed ingestion; the original cursor remains intact.
+    expect(Devdash::Models::SyncCursor.find_by!(source: "fake", scope_key: "global").cursor_value).to eq("cursor-0")
+    expect(Devdash::Models::CollectorRun.order(:id).last.status).to eq("failed")
+  end
 end
