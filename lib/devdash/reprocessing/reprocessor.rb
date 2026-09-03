@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../models/normalization_run"
+require_relative "../transports/errors"
 require_relative "derived_rebuilder"
 
 module Devdash
@@ -12,16 +13,20 @@ module Devdash
       end
 
       def call
-        runs = @registry.each.map do |(source, entity_type), normalizer|
-          Models::NormalizationRun.create!(
+        entries = @registry.each.to_a
+        run_ids = []
+        runs = entries.map do |(source, entity_type), normalizer|
+          run = Models::NormalizationRun.create!(
             normalizer_key: "#{source}:#{entity_type}", normalizer_version: normalizer.version,
             status: "running", started_at: Time.now.utc
           )
+          run_ids << run.id
+          run
         end
 
         ActiveRecord::Base.transaction do
           runs.each_with_index do |run, index|
-            (source, entity_type), normalizer = @registry.each.to_a[index]
+            (source, entity_type), normalizer = entries[index]
             normalizer.reset! if normalizer.respond_to?(:reset!)
             records = ordered_records(source, entity_type)
             records.each do |record|
@@ -34,8 +39,10 @@ module Devdash
         end
         runs
       rescue StandardError => error
-        failed_run = runs&.find { |run| run.status == "running" }
-        failed_run&.update!(status: "failed", finished_at: Time.now.utc, error_class: error.class.name, error_message: error.message.to_s[0, 1_000])
+        Models::NormalizationRun.where(id: run_ids).update_all(
+          status: "failed", finished_at: Time.now.utc, error_class: error.class.name,
+          error_message: Transports::Sanitizer.sanitize(error.message.to_s)[0, 1_000]
+        ) unless run_ids.empty?
         raise
       end
 

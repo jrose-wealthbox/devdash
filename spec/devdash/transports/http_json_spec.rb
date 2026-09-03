@@ -52,4 +52,24 @@ RSpec.describe Devdash::Transports::HttpJson do
       transport.get(path: "/items", query: {}, headers: {})
     }.to raise_error(Devdash::Transports::ResponseError, /invalid JSON/)
   end
+
+  it "rejects GraphQL mutation POSTs" do
+    expect {
+      transport.post(path: "/graphql", body: { query: "mutation CreateThing { createThing { id } }" })
+    }.to raise_error(Devdash::Transports::ResponseError, /read-only/)
+  end
+
+  it "clamps negative and huge numeric Retry-After values" do
+    delays = []
+    client = described_class.new(base_uri: "https://api.example.test", sleeper: ->(seconds) { delays << seconds })
+    stub_request(:get, "https://api.example.test/negative")
+      .to_return({ status: 429, headers: { "Retry-After" => "-10" } }, { status: 200, body: '{"ok":true}' })
+    stub_request(:get, "https://api.example.test/huge")
+      .to_return({ status: 429, headers: { "Retry-After" => "999999999" } }, { status: 200, body: '{"ok":true}' })
+
+    client.get(path: "/negative", query: {}, headers: {})
+    client.get(path: "/huge", query: {}, headers: {})
+
+    expect(delays).to eq([0.0, 300.0])
+  end
 end

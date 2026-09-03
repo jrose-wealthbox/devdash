@@ -10,6 +10,7 @@ module Devdash
     class HttpJson
       Response = Data.define(:status, :headers, :body)
       RETRYABLE_STATUSES = [429, 502, 503, 504].freeze
+      MAX_RETRY_AFTER = 300.0
 
       def initialize(base_uri:, default_headers: {}, open_timeout: 10, read_timeout: 30, max_retries: 3, sleeper: Kernel.method(:sleep))
         @base_uri = URI(base_uri)
@@ -31,6 +32,7 @@ module Devdash
       private
 
       def request(method, path, query, headers, body = nil)
+        reject_graphql_mutation!(body) if method == :POST
         attempts = 0
         loop do
           begin
@@ -76,12 +78,19 @@ module Devdash
       def retry_or_raise(error_class, message, attempts, retry_after = nil)
         return raise(error_class, message) if attempts >= @max_retries
 
-        delay = retry_after ? Float(retry_after) : (2**attempts).to_f
+        delay = retry_after ? Float(retry_after).clamp(0.0, MAX_RETRY_AFTER) : (2**attempts).to_f
         @sleeper.call(delay)
         true
-      rescue ArgumentError
+      rescue ArgumentError, TypeError
         @sleeper.call((2**attempts).to_f)
         true
+      end
+
+      def reject_graphql_mutation!(body)
+        query = body.is_a?(Hash) ? (body["query"] || body[:query]) : body
+        return unless query.to_s.match?(/\A\s*mutation\b/i)
+
+        raise ResponseError, "read-only HTTP transport rejects GraphQL mutation operations"
       end
     end
   end

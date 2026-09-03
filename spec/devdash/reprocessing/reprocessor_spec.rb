@@ -49,9 +49,54 @@ RSpec.describe Devdash::Reprocessing::Reprocessor do
     expect(Devdash::Models::NormalizationRun.last).to have_attributes(status: "failed", error_class: "FakeNormalizer::Failure")
   end
 
+  it "marks every replay run failed when a later normalizer fails" do
+    source_record("thing", observed_at: Time.utc(2026, 1, 1), version: 1)
+    source_record("other", observed_at: Time.utc(2026, 1, 2), version: 1)
+    first = Class.new do
+      define_singleton_method(:version) { 2 }
+      define_singleton_method(:reset!) { }
+      define_singleton_method(:call) { |_record| }
+    end
+    second_failure = Class.new(StandardError)
+    second = Class.new do
+      define_singleton_method(:version) { 3 }
+      define_singleton_method(:reset!) { }
+      define_singleton_method(:call) { |_record| raise second_failure, "authorization=secret" }
+    end
+    Devdash::Normalizers::Registry.register(source: "test", entity_type: "first", normalizer: first)
+    Devdash::Normalizers::Registry.register(source: "test", entity_type: "thing", normalizer: second)
+
+    expect { described_class.new(registry: Devdash::Normalizers::Registry).call }.to raise_error(second_failure)
+
+    expect(Devdash::Models::NormalizationRun.pluck(:status)).to all(eq("failed"))
+    expect(Devdash::Models::NormalizationRun.pluck(:error_message)).to all(include("authorization=[REDACTED]"))
+    expect(Devdash::Models::SourceRecord.pluck(:normalizer_version).uniq).to eq([1])
+  end
+
+  it "marks all runs failed when the derived rebuilder fails" do
+    source_record("thing", observed_at: Time.utc(2026, 1, 1), version: 1)
+    Devdash::Normalizers::Registry.register(source: "test", entity_type: "thing", normalizer: FakeNormalizer)
+    rebuilder = double("derived rebuilder")
+    allow(rebuilder).to receive(:call).and_raise(StandardError, "token=secret")
+
+    expect { described_class.new(registry: Devdash::Normalizers::Registry, derived_rebuilder: rebuilder).call }
+      .to raise_error(StandardError)
+
+    expect(Devdash::Models::NormalizationRun.pluck(:status)).to eq(["failed"])
+    expect(Devdash::Models::NormalizationRun.last.error_message).to include("token=[REDACTED]")
+  end
+
   it "rebuilds only injected disposable cache models" do
-    cache = double("cache", delete_all: 3)
+    cache = double("cache", delete_all: 3, disposable_derived_cache?: true)
     expect(cache).to receive(:delete_all)
     expect(Devdash::Reprocessing::DerivedRebuilder.new(cache_models: [cache]).call).to eq(3)
+  end
+
+  it "rejects an unmarked cache model before opening a transaction" do
+    cache = double("canonical model", delete_all: 3)
+    expect(ActiveRecord::Base).not_to receive(:transaction)
+
+    expect { Devdash::Reprocessing::DerivedRebuilder.new(cache_models: [cache]).call }
+      .to raise_error(ArgumentError, /disposable derived cache/)
   end
 end
