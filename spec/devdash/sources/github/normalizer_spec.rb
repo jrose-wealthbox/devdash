@@ -5,6 +5,13 @@ require "securerandom"
 RSpec.describe Devdash::Sources::Github::Normalizer do
   before { connect_test_database! }
 
+  it "registers both canonical and legacy pull request event entity types" do
+    expect(Devdash::Normalizers::Registry.fetch(source: "github", entity_type: "pull_request_events"))
+      .to be(Devdash::Sources::Github::NORMALIZER)
+    expect(Devdash::Normalizers::Registry.fetch(source: "github", entity_type: "pull_request_timeline"))
+      .to be(Devdash::Sources::Github::NORMALIZER)
+  end
+
   it "classifies generated, vendor, and lock paths" do
     normalizer = described_class.new
     expect(normalizer.send(:exclusion, "app/generated/schema.rb")).to eq("generated")
@@ -135,14 +142,79 @@ RSpec.describe Devdash::Sources::Github::Normalizer do
     expect(Devdash::Models::Commit.find_by!(sha: "sha").author_email).to eq("dev@example.test")
   end
 
+  it "does not merge a changed login through shared email evidence" do
+    normalizer = described_class.new
+    observed_at = Time.utc(2026, 1, 4)
+
+    original_person = normalizer.send(:person, "old-login", email: "person@example.test", observed_at: observed_at)
+    replacement_person = normalizer.send(:person, "new-login", email: "person@example.test", observed_at: observed_at + 1)
+
+    expect(replacement_person).not_to eq(original_person)
+    expect(Devdash::Models::SourceIdentity.where(source: "github").pluck(:external_id))
+      .to contain_exactly("old-login", "new-login")
+    expect(Devdash::Models::SourceIdentity.find_by!(source: "github", external_id: "old-login"))
+      .to have_attributes(login: "old-login", normalized_email: "person@example.test")
+  end
+
+  it "does not attach email-only evidence to an ambiguous email match" do
+    normalizer = described_class.new
+    first = Devdash::Models::Person.create!(display_name: "first")
+    second = Devdash::Models::Person.create!(display_name: "second")
+    Devdash::Models::SourceIdentity.create!(
+      person: first, source: "github", external_id: "shared@example.test",
+      normalized_email: "shared@example.test", resolution_method: "provisional"
+    )
+    Devdash::Models::SourceIdentity.create!(
+      person: second, source: "github", external_id: "second-login", login: "second-login",
+      normalized_email: "shared@example.test", resolution_method: "provisional"
+    )
+
+    expect(normalizer.send(:person, nil, email: " shared@example.test ", observed_at: Time.utc(2026, 1, 4))).to be_nil
+    expect(Devdash::Models::SourceIdentity.where(source: "github").pluck(:external_id))
+      .to contain_exactly("shared@example.test", "second-login")
+    expect(Devdash::Models::SourceIdentity.where(source: "github").pluck(:person_id))
+      .to contain_exactly(first.id, second.id)
+  end
+
+  it "matches unique email-only evidence without changing the existing login identity" do
+    normalizer = described_class.new
+    person = normalizer.send(:person, "stable-login", email: "stable@example.test", observed_at: Time.utc(2026, 1, 1))
+
+    expect(normalizer.send(:person, nil, email: " stable@example.test ", observed_at: Time.utc(2026, 1, 2)))
+      .to eq(person)
+    expect(Devdash::Models::SourceIdentity.find_by!(source: "github", external_id: "stable-login"))
+      .to have_attributes(login: "stable-login", external_id: "stable-login", normalized_email: "stable@example.test")
+    expect(Devdash::Models::SourceIdentity.where(source: "github").count).to eq(1)
+  end
+
+  it "strips sparse login and email evidence before retaining it" do
+    normalizer = described_class.new
+    normalizer.call(source_record("repository", "github:o/r:repository", { "full_name" => "o/r" }))
+    pull_payload = { "number" => 42, "node_id" => "pr-42", "state" => "open", "user" => { "login" => "  dev  " } }
+    normalizer.call(source_record("pull_request", "github:o/r:pull:42", pull_payload))
+
+    commit = commit_payload(email: "  DEV@Example.Test  ", sha: "sha", login: "  dev  ")
+    normalizer.call(source_record("commit_files", "github:o/r:commit:sha", commit))
+
+    pull_request = Devdash::Models::PullRequest.find_by!(number: 42)
+    commit_record = Devdash::Models::Commit.find_by!(sha: "sha")
+    expect(pull_request).to have_attributes(author_login: "dev")
+    expect(commit_record).to have_attributes(
+      author_login: "dev", author_email: "dev@example.test",
+      committer_login: "dev", committer_email: "dev@example.test"
+    )
+    expect(Devdash::Models::SourceIdentity.find_by!(source: "github", external_id: "dev"))
+      .to have_attributes(login: "dev", normalized_email: "dev@example.test")
+  end
+
   def source_record(entity_type, external_id, payload, scope_key: "o/r", observed_at: Time.utc(2026, 1, 4), source_updated_at: Time.utc(2026, 1, 3))
     run = Devdash::Models::CollectorRun.create!(source: "github", scope_key:, status: "succeeded", started_at: Time.utc(2026, 1, 4))
     Devdash::Models::SourceRecord.create!(collector_run: run, source: "github", scope_key:, entity_type:, external_id:, observed_at:, source_updated_at:, query_fingerprint: "test", payload_hash: SecureRandom.hex(8), payload_json: JSON.generate(payload))
   end
 
-  def commit_payload(email:, sha:)
+  def commit_payload(email:, sha:, login: "dev")
     {
-      "sha" => sha, "author" => { "login" => "dev" }, "committer" => { "login" => "dev" },
+      "sha" => sha, "author" => { "login" => login }, "committer" => { "login" => login },
       "commit" => {
         "author" => { "email" => email, "date" => "2026-01-01T00:00:00Z" },
         "committer" => { "email" => email, "date" => "2026-01-01T01:00:00Z" }

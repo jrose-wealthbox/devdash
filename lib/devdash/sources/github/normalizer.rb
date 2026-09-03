@@ -31,7 +31,7 @@ module Devdash
         ].freeze
         ENTITY_TYPES = %w[
           repository pull_request pull_request_reviews pull_request_timeline
-          pull_request_files commit commit_files
+          pull_request_events pull_request_files commit commit_files
         ].freeze
 
         attr_reader :version
@@ -76,29 +76,35 @@ module Devdash
         end
 
         def person(login, email: nil, observed_at:)
-          login = login.to_s.strip
-          email = email.to_s.strip.downcase
-          return nil if login.empty? && email.empty?
+          login = nonempty(login)
+          email = normalized_email(email)
+          return nil if login.nil? && email.nil?
 
-          external = login.empty? ? email : login
-          identity = Models::SourceIdentity.find_by(source: "github", external_id: external)
-          identity ||= Models::SourceIdentity.find_by(source: "github", normalized_email: email) unless email.empty?
+          external = login || email
+          identity = if login
+            Models::SourceIdentity.find_by(source: "github", external_id: external)
+          else
+            identities = email_identities(email)
+            identities.one? ? identities.first : nil
+          end
           if identity
             identity.update!(
-              login: nonempty(login) || identity.login,
-              normalized_email: nonempty(email) || identity.normalized_email,
-              observed_display_name: nonempty(login) || identity.observed_display_name,
+              login: login || identity.login,
+              normalized_email: email || identity.normalized_email,
+              observed_display_name: login || identity.observed_display_name,
               first_observed_at: [identity.first_observed_at, observed_at].compact.min,
               last_observed_at: [identity.last_observed_at, observed_at].compact.max
             )
             return identity.person
           end
 
-          person = Models::Person.create!(display_name: login.empty? ? email : login)
+          return nil if login.nil? && email_identities(email).length > 1
+
+          person = Models::Person.create!(display_name: login || email)
           Models::SourceIdentity.create!(
             person:, source: "github", external_id: external,
-            login: nonempty(login), normalized_email: nonempty(email),
-            observed_display_name: nonempty(login), resolution_method: "provisional",
+            login:, normalized_email: email,
+            observed_display_name: login, resolution_method: "provisional",
             first_observed_at: observed_at, last_observed_at: observed_at
           )
           person
@@ -117,7 +123,7 @@ module Devdash
           pr = Models::PullRequest.find_or_initialize_by(repository: repo, number: payload.fetch("number"))
           user = payload["user"] || {}
           pr.update!(
-            node_id: payload["node_id"], author: person(user["login"], observed_at: record.observed_at), author_login: user["login"],
+            node_id: payload["node_id"], author: person(user["login"], observed_at: record.observed_at), author_login: nonempty(user["login"]),
             state: payload["state"], draft: payload["draft"] == true,
             base_branch: payload.dig("base", "ref"), head_sha: payload.dig("head", "sha"),
             merge_sha: payload["merge_commit_sha"], opened_at: parse_time(payload["created_at"]),
@@ -141,7 +147,7 @@ module Devdash
             pr = pull(name, number)
             user = review["user"] || {}
             Models::PullRequestReview.find_or_initialize_by(github_review_id: review.fetch("id").to_s).update!(
-              pull_request: pr, reviewer: person(user["login"], observed_at: record.observed_at), reviewer_login: user["login"],
+              pull_request: pr, reviewer: person(user["login"], observed_at: record.observed_at), reviewer_login: nonempty(user["login"]),
               state: review["state"], submitted_at: parse_time(review["submitted_at"])
             )
           end
@@ -160,8 +166,8 @@ module Devdash
             Models::PullRequestEvent.find_or_initialize_by(
               pull_request: pr, stable_external_id: event["id"].to_s
             ).update!(
-              kind: event["event"] || event["type"], actor: person(actor["login"], observed_at: record.observed_at), actor_login: actor["login"],
-              subject: person(requested["login"], observed_at: record.observed_at), subject_login: requested["login"],
+              kind: event["event"] || event["type"], actor: person(actor["login"], observed_at: record.observed_at), actor_login: nonempty(actor["login"]),
+              subject: person(requested["login"], observed_at: record.observed_at), subject_login: nonempty(requested["login"]),
               occurred_at: parse_time(event["created_at"]), derivation: "github_timeline"
             )
           end
@@ -192,9 +198,9 @@ module Devdash
             author: person(payload.dig("author", "login"), email: author["email"], observed_at: record.observed_at),
             committer: person(payload.dig("committer", "login"), email: committer["email"], observed_at: record.observed_at),
             author_login: nonempty(payload.dig("author", "login")) || commit.author_login,
-            author_email: nonempty(author["email"]) || commit.author_email,
+            author_email: normalized_email(author["email"]) || commit.author_email,
             committer_login: nonempty(payload.dig("committer", "login")) || commit.committer_login,
-            committer_email: nonempty(committer["email"]) || commit.committer_email,
+            committer_email: normalized_email(committer["email"]) || commit.committer_email,
             authored_at: parse_time(author["date"]), committed_at: parse_time(committer["date"]),
             parent_count: Array(payload["parents"]).length, default_branch_reachable: reachable,
             pull_request: pull_for_commit(name, payload)
@@ -257,7 +263,18 @@ module Devdash
         end
 
         def nonempty(value)
-          value unless value.to_s.empty?
+          value = value.to_s.strip
+          value unless value.empty?
+        end
+
+        def normalized_email(value)
+          nonempty(value)&.downcase
+        end
+
+        def email_identities(email)
+          return [] if email.nil?
+
+          Models::SourceIdentity.where(source: "github", normalized_email: email).limit(2).to_a
         end
 
         def pull_number(external_id)
