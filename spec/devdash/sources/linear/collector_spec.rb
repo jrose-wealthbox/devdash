@@ -37,4 +37,34 @@ RSpec.describe Devdash::Sources::Linear::Collector do
   it "loads its Linear model dependency when the collector is required directly" do
     expect(Devdash::Models::LinearIssue).to be_a(Class)
   end
+
+  it "does not regress a prior cursor when returned issue timestamps are older" do
+    Devdash::Models::SyncCursor.create!(source: "linear", scope_key: "global", cursor_type: "updated_at",
+      cursor_value: "2026-01-03T00:00:00Z")
+    client = instance_double(Devdash::Sources::Linear::Client)
+    writer = instance_double(Devdash::Ingestion::Writer)
+    issue = { "id" => "issue-1", "updatedAt" => "2026-01-02T00:00:00Z" }
+    allow(client).to receive(:each_issue).and_yield(issue)
+    allow(client).to receive(:issue_history).with(id: "issue-1").and_return([])
+    batch = nil
+    allow(writer).to receive(:call) { |value| batch = value }
+
+    described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 2, 12) }).call(since: Time.utc(2026, 1, 1))
+
+    expect(batch.cursor_after).to eq("2026-01-03T00:00:00Z")
+  end
+
+  it "uses the successful observation boundary when it is newer than source timestamps" do
+    client = instance_double(Devdash::Sources::Linear::Client)
+    writer = instance_double(Devdash::Ingestion::Writer)
+    issue = { "id" => "issue-1", "updatedAt" => "2026-01-02T00:00:00Z" }
+    allow(client).to receive(:each_issue).and_yield(issue)
+    allow(client).to receive(:issue_history).with(id: "issue-1").and_return([])
+    batch = nil
+    allow(writer).to receive(:call) { |value| batch = value }
+
+    described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 3) }).call(since: Time.utc(2026, 1, 1))
+
+    expect(batch.cursor_after).to eq("2026-01-03T00:00:00Z")
+  end
 end

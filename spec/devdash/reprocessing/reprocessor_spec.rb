@@ -119,7 +119,7 @@ RSpec.describe Devdash::Reprocessing::Reprocessor do
       "state" => { "id" => "state-1", "name" => "Todo", "type" => "backlog" },
       "creator" => nil, "assignee" => nil, "labels" => { "nodes" => [] }, "attachments" => { "nodes" => [] }
     }
-    history_payload = { "issue_id" => "issue-1", "history" => [{ "id" => "history-1", "type" => "stateChange", "createdAt" => "2026-01-02T01:00:00Z", "actor" => nil, "fromState" => { "name" => "Todo" }, "toState" => { "name" => "In Progress" } }] }
+    history_payload = { "issue_id" => "issue-1", "history" => [{ "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z", "actor" => nil, "fromState" => { "name" => "Todo" }, "toState" => { "name" => "In Progress" } }] }
     source_record("issue", observed_at: Time.utc(2026, 1, 2), entity_type: "linear_issue", payload: issue_payload, source: "linear")
     source_record("history", observed_at: Time.utc(2026, 1, 2), entity_type: "linear_issue_history", payload: history_payload, source: "linear")
     Devdash::Normalizers::Registry.register(source: "linear", entity_type: "linear_issue", normalizer: Devdash::Sources::Linear::NORMALIZER)
@@ -138,7 +138,7 @@ RSpec.describe Devdash::Reprocessing::Reprocessor do
       "state" => { "id" => "state-1", "name" => "Todo", "type" => "backlog" },
       "creator" => nil, "assignee" => nil, "labels" => { "nodes" => [] }, "attachments" => { "nodes" => [] }
     }
-    history_payload = { "issue_id" => "issue-1", "history" => [{ "id" => "history-1", "type" => "stateChange", "createdAt" => "2026-01-02T01:00:00Z", "actor" => nil }] }
+    history_payload = { "issue_id" => "issue-1", "history" => [{ "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z", "actor" => nil }] }
     source_record("issue", observed_at: Time.utc(2026, 1, 2), entity_type: "linear_issue", payload: issue_payload, source: "linear")
     source_record("history", observed_at: Time.utc(2026, 1, 2), entity_type: "linear_issue_history", payload: history_payload, source: "linear")
     Devdash::Normalizers::Registry.register(source: "linear", entity_type: "linear_issue_history", normalizer: Devdash::Sources::Linear::NORMALIZER)

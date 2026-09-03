@@ -25,6 +25,29 @@ module Devdash
           "team" => ->(payload) { payload.dig("team", "id") },
           "title" => ->(payload) { payload["title"] }
         }.freeze
+        HISTORY_KIND_FIELDS = {
+          "state" => %w[fromState toState fromStateId toStateId],
+          "assignee" => %w[fromAssignee toAssignee fromAssigneeId toAssigneeId],
+          "cycle" => %w[fromCycle toCycle fromCycleId toCycleId],
+          "parent" => %w[fromParent toParent fromParentId toParentId],
+          "delegate" => %w[fromDelegate toDelegate],
+          "due_date" => %w[fromDueDate toDueDate],
+          "estimate" => %w[fromEstimate toEstimate],
+          "priority" => %w[fromPriority toPriority],
+          "project" => %w[fromProject toProject fromProjectId toProjectId],
+          "project_milestone" => %w[fromProjectMilestone toProjectMilestone],
+          "team" => %w[fromTeam toTeam fromTeamId toTeamId],
+          "title" => %w[fromTitle toTitle],
+          "sla" => %w[
+            fromSlaBreached toSlaBreached fromSlaBreachesAt toSlaBreachesAt
+            fromSlaStartedAt toSlaStartedAt fromSlaType toSlaType
+          ],
+          "label" => %w[addedLabelIds removedLabelIds addedLabels removedLabels],
+          "release" => %w[addedToReleaseIds removedFromReleaseIds addedToReleases removedFromReleases],
+          "attachment" => %w[attachment attachmentId],
+          "archive" => %w[archived archivedAt autoArchived autoClosed trashed],
+          "description" => %w[updatedDescription]
+        }.freeze
 
         attr_reader :version
 
@@ -106,7 +129,7 @@ module Devdash
         def normalize_history(record, payload)
           issue = Models::LinearIssue.find_by!(linear_id: payload.fetch("issue_id"))
           Array(payload["history"]).each do |event|
-            persist_event(issue, event, "source_event", observed_at: record.observed_at)
+            persist_event(issue, event, "source_event", kind: history_kind(event), observed_at: record.observed_at)
           end
         end
 
@@ -152,13 +175,13 @@ module Devdash
             effective_at = source_time(current_record)
             material = [issue.linear_id, field, previous_record.payload_hash, current_hash, effective_at&.iso8601(6)].join("|")
             persist_event(issue,
-              { "id" => Digest::SHA256.hexdigest(material), "type" => field,
+              { "id" => Digest::SHA256.hexdigest(material),
                 "createdAt" => effective_at&.iso8601(6), "from" => from, "to" => to },
-              "observed_diff", observed_at: current_record.observed_at)
+              "observed_diff", kind: field, observed_at: current_record.observed_at)
           end
         end
 
-        def persist_event(issue, event, derivation, observed_at: nil)
+        def persist_event(issue, event, derivation, kind: nil, observed_at: nil)
           stable_id = event["id"].to_s
           stable_id = Digest::SHA256.hexdigest(Ingestion::CanonicalJson.dump(event)) if stable_id.empty?
           existing = issue.events.find_or_initialize_by(stable_external_id: stable_id)
@@ -167,9 +190,11 @@ module Devdash
           from, to = event_values(event)
           occurred_at = parse_time(event["createdAt"] || event["occurredAt"]) ||
             (existing.persisted? ? existing.occurred_at : observed_at || @clock.call)
+          event_kind = kind || history_kind(event)
+          event_kind = existing.kind if existing.persisted? && event_kind == "update"
 
           attributes = {
-            kind: event["type"] || event["field"] || event["kind"] || (existing.kind || "unknown"),
+            kind: event_kind,
             from_value: from.nil? && existing.persisted? ? existing.from_value : from,
             to_value: to.nil? && existing.persisted? ? existing.to_value : to,
             occurred_at: occurred_at,
@@ -201,32 +226,32 @@ module Devdash
           ]
           direct_from = event.key?("from") ? event["from"] : event["fromValue"]
           direct_to = event.key?("to") ? event["to"] : event["toValue"]
-          if event.key?("from") || event.key?("fromValue") || event.key?("to") || event.key?("toValue")
+          if meaningful_value?(direct_from) || meaningful_value?(direct_to)
             return [display_value(direct_from), display_value(direct_to)]
           end
 
           pairs.each_slice(2) do |from_key, to_key|
-            next unless event.key?(from_key) || event.key?(to_key)
+            next unless meaningful_value?(event[from_key]) || meaningful_value?(event[to_key])
 
             return [display_value(event[from_key]), display_value(event[to_key])]
           end
 
-          return [nil, display_value(event["addedLabelIds"])] if event.key?("addedLabelIds")
-          return [display_value(event["removedLabelIds"]), nil] if event.key?("removedLabelIds")
+          return [nil, display_value(event["addedLabelIds"])] if meaningful_value?(event["addedLabelIds"])
+          return [display_value(event["removedLabelIds"]), nil] if meaningful_value?(event["removedLabelIds"])
 
           changes = event["changes"]
           if changes.is_a?(Hash)
             from = changes.key?("from") ? changes["from"] : changes["fromValue"]
             to = changes.key?("to") ? changes["to"] : changes["toValue"]
-            if changes.key?("from") || changes.key?("fromValue") || changes.key?("to") || changes.key?("toValue")
+            if meaningful_value?(from) || meaningful_value?(to)
               return [display_value(from), display_value(to)]
             end
 
-            nested = changes.values.select { |value| value.is_a?(Hash) }
+            nested = changes.values.select { |value| value.is_a?(Hash) && !value.empty? }
             if nested.length == 1
               from = nested.first.key?("from") ? nested.first["from"] : nested.first["fromValue"]
               to = nested.first.key?("to") ? nested.first["to"] : nested.first["toValue"]
-              if nested.first.key?("from") || nested.first.key?("fromValue") || nested.first.key?("to") || nested.first.key?("toValue")
+              if meaningful_value?(from) || meaningful_value?(to)
                 return [display_value(from), display_value(to)]
               end
             end
@@ -247,13 +272,66 @@ module Devdash
           end
         end
 
+        def history_kind(event)
+          HISTORY_KIND_FIELDS.each do |kind, fields|
+            return kind if fields.any? { |field| history_field_value?(kind, field, event[field]) }
+          end
+
+          changes = event["changes"]
+          if changes.is_a?(Hash) && !changes.empty?
+            keys = changes.keys.map(&:to_s).reject(&:empty?).sort
+            return normalize_kind_key(keys.first) if keys.one?
+          end
+
+          "update"
+        end
+
+        def history_field_value?(kind, field, value)
+          return value == true if kind == "description"
+          return value == true if kind == "archive" && %w[archived autoArchived autoClosed trashed].include?(field)
+
+          meaningful_value?(value)
+        end
+
+        def normalize_kind_key(key)
+          aliases = {
+            "state" => "state", "status" => "state", "assignee" => "assignee",
+            "cycle" => "cycle", "parent" => "parent", "delegate" => "delegate",
+            "dueDate" => "due_date", "estimate" => "estimate", "priority" => "priority",
+            "project" => "project", "projectMilestone" => "project_milestone", "team" => "team",
+            "title" => "title", "label" => "label", "labels" => "label", "release" => "release",
+            "attachment" => "attachment", "description" => "description"
+          }
+          aliases.fetch(key) { key.gsub(/([a-z\d])([A-Z])/, '\\1_\\2').downcase }
+        end
+
+        def meaningful_value?(value)
+          case value
+          when nil then false
+          when String then !value.empty?
+          when Array, Hash then !value.empty?
+          else true
+          end
+        end
+
         def merged_event_metadata(existing, event)
           previous = existing.persisted? && existing.metadata_json ? JSON.parse(existing.metadata_json) : {}
           previous = {} unless previous.is_a?(Hash)
-          merged = previous.merge(event) { |_key, old_value, new_value| new_value.nil? ? old_value : new_value }
+          merged = deep_merge_metadata(previous, event)
           Ingestion::CanonicalJson.dump(merged)
         rescue JSON::ParserError
           Ingestion::CanonicalJson.dump(event)
+        end
+
+        def deep_merge_metadata(previous, current)
+          previous.merge(current) do |_key, old_value, new_value|
+            next old_value if new_value.nil?
+            if old_value.is_a?(Hash) && new_value.is_a?(Hash)
+              deep_merge_metadata(old_value, new_value)
+            else
+              new_value
+            end
+          end
         end
 
         def person_for(identity, observed_at: nil)

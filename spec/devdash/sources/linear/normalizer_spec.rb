@@ -59,11 +59,11 @@ RSpec.describe Devdash::Sources::Linear::Normalizer do
     issue = source_record(entity_type: "linear_issue", external_id: "issue-1",
       payload: issue_payload(id: "issue-1", updated_at: "2026-01-02T00:00:00Z"))
     first_history = source_record(entity_type: "linear_issue_history", external_id: "history-snapshot-1",
-      payload: { "issue_id" => "issue-1", "history" => [{ "id" => "history-1", "type" => "estimateChange", "createdAt" => "2026-01-02T01:00:00Z", "fromEstimate" => 1, "toEstimate" => 3, "actor" => nil }] })
+      payload: { "issue_id" => "issue-1", "history" => [{ "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z", "fromEstimate" => 1, "toEstimate" => 3, "actor" => nil }] })
     later_history = source_record(entity_type: "linear_issue_history", external_id: "history-snapshot-2",
       payload: { "issue_id" => "issue-1", "history" => [
-        { "id" => "history-1", "type" => "estimateChange", "createdAt" => "2026-01-02T01:00:00Z", "fromEstimate" => 1, "toEstimate" => 3, "actor" => { "id" => "user-1", "name" => "Ada", "email" => "ada@example.test" } },
-        { "id" => "history-2", "type" => "update", "createdAt" => "2026-01-02T02:00:00Z", "changes" => { "priority" => { "from" => 3, "to" => 2 } }, "actor" => nil }
+        { "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z", "fromEstimate" => 1, "toEstimate" => 3, "actor" => { "id" => "user-1", "name" => "Ada", "email" => "ada@example.test" } },
+        { "id" => "history-2", "createdAt" => "2026-01-02T02:00:00Z", "changes" => { "priority" => { "from" => 3, "to" => 2 } }, "actor" => nil }
       ] })
     normalizer = described_class.new
     normalizer.call(issue)
@@ -72,6 +72,7 @@ RSpec.describe Devdash::Sources::Linear::Normalizer do
 
     event = Devdash::Models::LinearIssueEvent.find_by!(stable_external_id: "history-1")
     expect(event.actor_person).to have_attributes(display_name: "Ada")
+    expect(event.kind).to eq("estimate")
     expect(event.from_value).to eq("1")
     expect(event.to_value).to eq("3")
     expect(JSON.parse(event.metadata_json).fetch("actor").fetch("id")).to eq("user-1")
@@ -79,6 +80,52 @@ RSpec.describe Devdash::Sources::Linear::Normalizer do
     changes_event = Devdash::Models::LinearIssueEvent.find_by!(stable_external_id: "history-2")
     expect(changes_event.from_value).to eq("3")
     expect(changes_event.to_value).to eq("2")
+  end
+
+  it "deep-merges nested raw changes across repeated history observations" do
+    issue = source_record(entity_type: "linear_issue", external_id: "issue-1",
+      payload: issue_payload(id: "issue-1", updated_at: "2026-01-02T00:00:00Z"))
+    first_history = source_record(entity_type: "linear_issue_history", external_id: "history-snapshot-1",
+      payload: { "issue_id" => "issue-1", "history" => [{
+        "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z",
+        "changes" => { "priority" => { "from" => 3, "to" => 2 } }
+      }] })
+    later_history = source_record(entity_type: "linear_issue_history", external_id: "history-snapshot-2",
+      payload: { "issue_id" => "issue-1", "history" => [{
+        "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z",
+        "changes" => { "estimate" => { "from" => 1, "to" => 2 } }
+      }] })
+
+    normalizer = described_class.new
+    normalizer.call(issue)
+    normalizer.call(first_history)
+    normalizer.call(later_history)
+
+    changes = JSON.parse(Devdash::Models::LinearIssueEvent.find_by!(stable_external_id: "history-1").metadata_json).fetch("changes")
+    expect(changes).to include(
+      "priority" => { "from" => 3, "to" => 2 },
+      "estimate" => { "from" => 1, "to" => 2 }
+    )
+  end
+
+  it "derives a stable kind from supported history fields without a type field" do
+    issue = source_record(entity_type: "linear_issue", external_id: "issue-1",
+      payload: issue_payload(id: "issue-1", updated_at: "2026-01-02T00:00:00Z"))
+    history = source_record(entity_type: "linear_issue_history", external_id: "history-snapshot-1",
+      payload: { "issue_id" => "issue-1", "history" => [{
+        "id" => "history-1", "createdAt" => "2026-01-02T01:00:00Z",
+        "fromState" => { "id" => "state-1", "name" => "Todo" },
+        "toState" => { "id" => "state-2", "name" => "Done" }
+      }] })
+
+    normalizer = described_class.new
+    normalizer.call(issue)
+    normalizer.call(history)
+
+    event = Devdash::Models::LinearIssueEvent.find_by!(stable_external_id: "history-1")
+    expect(event.kind).to eq("state")
+    expect(event.from_value).to eq("Todo")
+    expect(event.to_value).to eq("Done")
   end
 
   it "updates source identity metadata without replacing manual resolution" do

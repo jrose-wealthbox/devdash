@@ -8,12 +8,12 @@ module Devdash
     module Linear
       class Client
         HISTORY_NODE_FIELDS = <<~GRAPHQL.freeze
-          id type createdAt updatedAt actor { id name email } actorId changes
+          id createdAt updatedAt actor { id name email } actorId changes
           archived archivedAt autoArchived autoClosed trashed
           addedLabelIds addedLabels { id name } removedLabelIds removedLabels { id name }
           addedToReleaseIds addedToReleases { id name } removedFromReleaseIds removedFromReleases { id name }
           attachment { id title url } attachmentId
-          fromState { id name type } toState { id name type }
+          fromState { id name } toState { id name }
           fromAssignee { id name email } toAssignee { id name email }
           fromCycle { id name } toCycle { id name }
           fromParent { id identifier title } toParent { id identifier title }
@@ -32,12 +32,11 @@ module Devdash
 
         ISSUE_QUERY = <<~GRAPHQL.freeze
           query Issues($filter: IssueFilter, $after: String) {
-            issues(filter: $filter, first: 100, after: $after) {
+            issues(filter: $filter, first: 100, after: $after, orderBy: updatedAt) {
               nodes { id identifier title url createdAt updatedAt startedAt completedAt canceledAt estimate
                 team { id name } project { id name } state { id name type }
                 creator { id name email } assignee { id name email }
                 labels { nodes { id name } } attachments { nodes { id title url } }
-                history { nodes { #{HISTORY_NODE_FIELDS} } pageInfo { hasNextPage endCursor } }
               }
               pageInfo { hasNextPage endCursor }
             }

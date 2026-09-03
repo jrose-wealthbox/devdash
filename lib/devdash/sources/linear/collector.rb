@@ -56,7 +56,7 @@ module Devdash
             observations << observation("linear_issue_history", "#{issue.fetch("id")}:#{Digest::SHA256.hexdigest(Ingestion::CanonicalJson.dump(history))}",
               { "issue_id" => issue.fetch("id"), "history" => history }, issue["updatedAt"], now, "issue_history")
           end
-          cursor_after = issues.values.filter_map { |issue| issue["updatedAt"] }.max || now.iso8601
+          cursor_after = next_cursor(cursor_before, issues.values, now)
           coverage_status = missing_active_ids.empty? ? "complete" : "partial"
           achieved_end_at = coverage_status == "complete" ? now : nil
           batch = Ingestion::Batch.new(source: "linear", scope_key: "global", cursor_type: "updated_at",
@@ -81,6 +81,12 @@ module Devdash
           Time.iso8601(value).utc if value
         rescue ArgumentError
           nil
+        end
+
+        def next_cursor(cursor_before, issues, successful_observation_boundary)
+          timestamps = [parse_time(cursor_before), successful_observation_boundary]
+          timestamps.concat(issues.filter_map { |issue| parse_time(issue["updatedAt"]) })
+          timestamps.compact.max.utc.iso8601
         end
       end
     end

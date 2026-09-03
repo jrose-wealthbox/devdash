@@ -44,9 +44,43 @@ RSpec.describe Devdash::Sources::Linear::Client do
 
     described_class.new(http:, api_key: "secret").each_issue { |_| }
 
+    query = nil
     expect(http).to have_received(:post) do |request|
       query = request.fetch(:body).fetch("query")
-      expect(query).to include("changes", "removedLabelIds", "removedLabels", "attachmentId", "fromProjectMilestone")
     end
+    expect(query).not_to include("history")
+    expect(described_class::HISTORY_NODE_FIELDS).to include("changes", "removedLabelIds", "removedLabels", "attachmentId", "fromProjectMilestone")
+  end
+
+  it "keeps issue listing queries flat and excludes synthetic history fields" do
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(instance_double(Devdash::Transports::HttpJson::Response,
+      body: { "data" => { "issues" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false } } } }))
+
+    described_class.new(http:, api_key: "secret").each_issue { |_| }
+
+    expect(described_class::HISTORY_NODE_FIELDS).not_to match(/\btype\b/)
+    expect(http).to have_received(:post) do |request|
+      query = request.fetch(:body).fetch("query")
+      expect(query).not_to include("history")
+    end
+  end
+
+  it "paginates issue history independently using schema-shaped nodes" do
+    responses = [
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: JSON.parse(File.read("spec/fixtures/linear/issue_history_page_1.json"))),
+      instance_double(Devdash::Transports::HttpJson::Response,
+        body: JSON.parse(File.read("spec/fixtures/linear/issue_history_page_2.json")))
+    ]
+    http = instance_double(Devdash::Transports::HttpJson)
+    allow(http).to receive(:post).and_return(*responses)
+
+    history = described_class.new(http:, api_key: "secret").issue_history(id: "issue-1")
+
+    expect(history.map { |event| event.fetch("id") }).to eq(%w[history-1 history-2])
+    expect(http).to have_received(:post).with(hash_including(
+      body: hash_including("variables" => hash_including("id" => "issue-1", "after" => "history-cursor-1"))
+    )).once
   end
 end
