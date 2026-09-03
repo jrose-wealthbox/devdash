@@ -13,4 +13,17 @@ RSpec.describe "GitHub schema" do
     expect(Devdash::Models::PullRequest.connection.index_exists?(:pull_requests, [:repository_id, :number], unique: true)).to be(true)
     expect(Devdash::Models::Commit.connection.index_exists?(:commits, [:repository_id, :sha], unique: true)).to be(true)
   end
+
+  it "indexes canonical people and time query paths" do
+    connect_test_database!
+
+    expect(Devdash::Models::PullRequest.connection.index_exists?(:pull_requests, :author_id)).to be(true)
+    expect(Devdash::Models::PullRequest.connection.index_exists?(:pull_requests, [:repository_id, :opened_at])).to be(true)
+    expect(Devdash::Models::PullRequest.connection.index_exists?(:pull_requests, [:repository_id, :closed_at])).to be(true)
+    expect(Devdash::Models::PullRequest.connection.index_exists?(:pull_requests, [:repository_id, :merged_at])).to be(true)
+    expect(Devdash::Models::PullRequestEvent.connection.index_exists?(:pull_request_events, [:pull_request_id, :occurred_at])).to be(true)
+    expect(Devdash::Models::PullRequestReview.connection.index_exists?(:pull_request_reviews, [:pull_request_id, :submitted_at])).to be(true)
+    expect(Devdash::Models::Commit.connection.index_exists?(:commits, [:repository_id, :authored_at])).to be(true)
+    expect(Devdash::Models::Commit.connection.index_exists?(:commits, :author_id)).to be(true)
+  end
 end

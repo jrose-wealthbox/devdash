@@ -25,6 +25,9 @@ class CreateGithubDomain < ActiveRecord::Migration[8.1]
     add_index :pull_requests, %i[repository_id number], unique: true
     add_index :pull_requests, :node_id, unique: true, where: "node_id IS NOT NULL"
     add_index :pull_requests, %i[repository_id source_updated_at]
+    add_index :pull_requests, %i[repository_id opened_at]
+    add_index :pull_requests, %i[repository_id closed_at]
+    add_index :pull_requests, %i[repository_id merged_at]
 
     create_table :pull_request_events do |t|
       t.references :pull_request, null: false, foreign_key: true
@@ -39,6 +42,7 @@ class CreateGithubDomain < ActiveRecord::Migration[8.1]
       t.timestamps
     end
     add_index :pull_request_events, %i[pull_request_id stable_external_id], unique: true, name: "idx_pr_events_pr_external"
+    add_index :pull_request_events, %i[pull_request_id occurred_at]
     add_index :pull_request_events, :occurred_at
 
     create_table :pull_request_reviews do |t|
@@ -51,6 +55,7 @@ class CreateGithubDomain < ActiveRecord::Migration[8.1]
       t.timestamps
     end
     add_index :pull_request_reviews, :github_review_id, unique: true
+    add_index :pull_request_reviews, %i[pull_request_id submitted_at]
     add_index :pull_request_reviews, :submitted_at
 
     create_table :pull_request_files do |t|
@@ -81,6 +86,7 @@ class CreateGithubDomain < ActiveRecord::Migration[8.1]
       t.timestamps
     end
     add_index :commits, %i[repository_id sha], unique: true
+    add_index :commits, %i[repository_id authored_at]
     add_index :commits, %i[repository_id committed_at]
     add_index :commits, :default_branch_reachable
 

@@ -1,13 +1,27 @@
 # frozen_string_literal: true
 
 require "json"
+require "time"
+
+module Devdash
+  class Error < StandardError; end unless const_defined?(:Error, false)
+end
+
+require_relative "../../transports/command"
 
 module Devdash
   module Sources
     module Github
       class Client
+        attr_reader :page_count
+
         def initialize(command: Devdash::Transports::Command.new)
           @command = command
+          @page_count = 0
+        end
+
+        def reset_page_count!
+          @page_count = 0
         end
 
         def repository(name) = get(["gh", "api", "repos/#{name}"])
@@ -62,9 +76,23 @@ module Devdash
 
         def paginate(argv)
           value = JSON.parse(@command.capture(*argv).stdout)
-          value.is_a?(Array) ? value : [value]
+          pages = if value.is_a?(Array)
+            if value.empty?
+              [[]]
+            elsif value.all? { |page| page.is_a?(Array) || (page.is_a?(Hash) && page.key?("items")) }
+              value
+            else
+              [value]
+            end
+          else
+            [value]
+          end
+          @page_count += pages.length
+          pages
         end
       end
     end
   end
 end
+
+Devdash::Sources::GitHub = Devdash::Sources::Github unless Devdash::Sources.const_defined?(:GitHub, false)
