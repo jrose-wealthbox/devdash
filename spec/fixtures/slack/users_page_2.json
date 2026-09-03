@@ -1,0 +1,40 @@
+{
+  "ok": true,
+  "members": [
+    {
+      "id": "U005",
+      "team_id": "T001",
+      "name": "former-engineer",
+      "deleted": true,
+      "real_name": "Former Engineer",
+      "profile": {
+        "display_name": "Former",
+        "real_name": "Former Engineer",
+        "email": "former.engineer@example.test",
+        "title": "Software Engineer"
+      },
+      "is_restricted": false,
+      "is_ultra_restricted": false,
+      "is_bot": false,
+      "updated": 1756890240
+    },
+    {
+      "id": "U006",
+      "team_id": "T001",
+      "name": "title-only",
+      "deleted": false,
+      "real_name": "Title Only",
+      "profile": {
+        "display_name": "Title Only",
+        "real_name": "Title Only",
+        "title": "Senior Software Engineer"
+      },
+      "is_restricted": false,
+      "is_ultra_restricted": false,
+      "is_bot": false,
+      "updated": 1756890300
+    }
+  ],
+  "cache_ts": 1756890320,
+  "response_metadata": { "next_cursor": "" }
+}
