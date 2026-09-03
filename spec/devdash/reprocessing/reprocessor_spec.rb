@@ -17,6 +17,25 @@ RSpec.describe Devdash::Reprocessing::Reprocessor do
     expect(status).to be_success, "stdout: #{stdout}\nstderr: #{stderr}"
   end
 
+  it "registers Linear normalizers when loaded before the reprocessor" do
+    lib_directory = File.expand_path("../../../lib", __dir__)
+    script = <<~'RUBY'
+      require "devdash/sources/linear/normalizer"
+      require "devdash/reprocessing/reprocessor"
+
+      registry = Devdash::Normalizers::Registry
+      normalizer = Devdash::Sources::Linear::NORMALIZER
+      %w[linear_issue linear_issue_history].each do |entity_type|
+        abort "missing Linear normalizer" unless registry.fetch(source: "linear", entity_type:).equal?(normalizer)
+      end
+
+      Devdash::Reprocessing::Reprocessor.new(registry: registry)
+    RUBY
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-I#{lib_directory}", "-e", script)
+
+    expect(status).to be_success, "stdout: #{stdout}\nstderr: #{stderr}"
+  end
+
   before do
     connect_test_database!
     FakeNormalizer.reset!

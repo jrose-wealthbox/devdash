@@ -417,6 +417,8 @@ module Devdash
             Devdash::Normalizers::Registry.fetch(source: "linear", entity_type:).equal?(NORMALIZER)
         end
       end
+
+      register_normalizer!
     end
   end
 end
