@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
+require_relative "../database"
+require_relative "../models/base_record"
 require_relative "../models/normalization_run"
+
+module Devdash
+  class Error < StandardError; end unless const_defined?(:Error, false)
+end
+
 require_relative "../transports/errors"
 require_relative "derived_rebuilder"
 

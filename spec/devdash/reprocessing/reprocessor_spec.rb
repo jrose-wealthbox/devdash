@@ -2,9 +2,21 @@
 
 require "devdash/reprocessing/reprocessor"
 require "devdash/sources/linear/normalizer"
+require "open3"
+require "rbconfig"
 require_relative "../../support/fake_normalizer"
 
 RSpec.describe Devdash::Reprocessing::Reprocessor do
+  it "loads its Active Record base when required without the central loader" do
+    lib_directory = File.expand_path("../../../lib", __dir__)
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, "-I#{lib_directory}", "-e",
+      'require "devdash/reprocessing/reprocessor"; abort unless Devdash::Models::BaseRecord.abstract_class?'
+    )
+
+    expect(status).to be_success, "stdout: #{stdout}\nstderr: #{stderr}"
+  end
+
   before do
     connect_test_database!
     FakeNormalizer.reset!

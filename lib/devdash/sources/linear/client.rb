@@ -7,6 +7,15 @@ module Devdash
   module Sources
     module Linear
       class Client
+        ISSUE_PAGE_SIZE = 50
+        RELATION_PAGE_SIZE = 50
+
+        ISSUE_NODE_FIELDS = <<~GRAPHQL.freeze
+          id identifier title url createdAt updatedAt startedAt completedAt canceledAt estimate
+          team { id name } project { id name } state { id name type }
+          creator { id name email } assignee { id name email }
+        GRAPHQL
+
         HISTORY_NODE_FIELDS = <<~GRAPHQL.freeze
           id createdAt updatedAt actor { id name email } actorId changes
           archived archivedAt autoArchived autoClosed trashed
@@ -32,13 +41,30 @@ module Devdash
 
         ISSUE_QUERY = <<~GRAPHQL.freeze
           query Issues($filter: IssueFilter, $after: String) {
-            issues(filter: $filter, first: 100, after: $after, orderBy: updatedAt) {
-              nodes { id identifier title url createdAt updatedAt startedAt completedAt canceledAt estimate
-                team { id name } project { id name } state { id name type }
-                creator { id name email } assignee { id name email }
-                labels { nodes { id name } } attachments { nodes { id title url } }
-              }
+            issues(filter: $filter, first: #{ISSUE_PAGE_SIZE}, after: $after, orderBy: updatedAt) {
+              nodes { #{ISSUE_NODE_FIELDS} }
               pageInfo { hasNextPage endCursor }
+            }
+          }
+        GRAPHQL
+
+        ISSUE_LOOKUP_QUERY = <<~GRAPHQL.freeze
+          query Issue($id: String!) {
+            issue(id: $id) { #{ISSUE_NODE_FIELDS} }
+          }
+        GRAPHQL
+
+        ISSUE_RELATIONS_QUERY = <<~GRAPHQL.freeze
+          query IssueRelations($id: String!, $labelsAfter: String, $attachmentsAfter: String) {
+            issue(id: $id) {
+              labels(first: #{RELATION_PAGE_SIZE}, after: $labelsAfter) {
+                nodes { id name }
+                pageInfo { hasNextPage endCursor }
+              }
+              attachments(first: #{RELATION_PAGE_SIZE}, after: $attachmentsAfter) {
+                nodes { id title url }
+                pageInfo { hasNextPage endCursor }
+              }
             }
           }
         GRAPHQL
@@ -59,13 +85,15 @@ module Devdash
         end
 
         def each_issue(updated_since: nil)
-          each_connection(query: ISSUE_QUERY, variables: issue_variables(updated_since), path: %w[data issues]) { |node| yield node }
+          each_connection(query: ISSUE_QUERY, variables: issue_variables(updated_since), path: %w[data issues]) do |node|
+            yield hydrate_issue(node)
+          end
         end
 
         def issue(id:)
-          issue = nil
-          each_connection(query: ISSUE_QUERY, variables: { "filter" => { "id" => { "eq" => id } }, "after" => nil }, path: %w[data issues]) { |node| issue = node }
-          issue
+          body = post(query: ISSUE_LOOKUP_QUERY, variables: { "id" => id })
+          issue = body.dig("data", "issue")
+          issue && hydrate_issue(issue)
         end
 
         def issue_history(id:)
@@ -81,17 +109,62 @@ module Devdash
           { "filter" => filter, "after" => nil }
         end
 
+        def hydrate_issue(issue)
+          relations = issue_relations(id: issue.fetch("id"))
+          issue.merge(
+            "labels" => { "nodes" => relations.fetch("labels") },
+            "attachments" => { "nodes" => relations.fetch("attachments") }
+          )
+        end
+
+        def issue_relations(id:)
+          nodes = { "labels" => [], "attachments" => [] }
+          cursors = { "labels" => nil, "attachments" => nil }
+          finished = { "labels" => false, "attachments" => false }
+
+          until finished.values.all?
+            body = post(query: ISSUE_RELATIONS_QUERY, variables: {
+              "id" => id, "labelsAfter" => cursors.fetch("labels"), "attachmentsAfter" => cursors.fetch("attachments")
+            })
+            issue = body.dig("data", "issue")
+            break unless issue
+
+            %w[labels attachments].each do |name|
+              next if finished.fetch(name)
+
+              connection = issue.fetch(name, {})
+              nodes.fetch(name).concat(Array(connection["nodes"]))
+              page = connection.fetch("pageInfo", {})
+              if page["hasNextPage"]
+                cursors[name] = page["endCursor"]
+                raise Devdash::Error, "Linear response missing pagination cursor" if cursors[name].to_s.empty?
+              else
+                finished[name] = true
+              end
+            end
+          end
+
+          nodes
+        end
+
+        def post(query:, variables:)
+          response = @http.post(path: "/graphql", headers: {
+            "Authorization" => @api_key, "Content-Type" => "application/json"
+          }, body: { "query" => query, "variables" => variables })
+          body = response.body
+          errors = body.is_a?(Hash) ? body["errors"] : nil
+          if errors && !errors.empty?
+            details = Array(errors).filter_map { |error| error.is_a?(Hash) ? [error["code"], error["message"]].compact.join(": ") : nil }
+            raise Devdash::Error, "Linear GraphQL error: #{details.join("; ")}".slice(0, 500)
+          end
+          body
+        end
+
         def each_connection(query:, variables:, path:)
           cursor = nil
           loop do
             vars = variables.merge("after" => cursor)
-            response = @http.post(path: "/graphql", headers: { "Authorization" => @api_key, "Content-Type" => "application/json" }, body: { "query" => query, "variables" => vars })
-            body = response.body
-            errors = body.is_a?(Hash) ? body["errors"] : nil
-            if errors && !errors.empty?
-              details = Array(errors).filter_map { |error| error.is_a?(Hash) ? [error["code"], error["message"]].compact.join(": ") : nil }
-              raise Devdash::Error, "Linear GraphQL error: #{details.join("; ")}".slice(0, 500)
-            end
+            body = post(query:, variables: vars)
             connection = path.inject(body) { |value, key| value.is_a?(Hash) ? value[key] : nil }
             raise Devdash::Error, "Linear response missing connection" unless connection.is_a?(Hash)
             Array(connection["nodes"]).each { |node| yield node }

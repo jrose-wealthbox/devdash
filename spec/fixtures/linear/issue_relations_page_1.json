@@ -1,0 +1,1 @@
+{"data":{"issue":{"labels":{"nodes":[{"id":"label-1","name":"backend"}],"pageInfo":{"hasNextPage":true,"endCursor":"labels-cursor-1"}},"attachments":{"nodes":[{"id":"attachment-1","title":"PR 1","url":"https://github.com/acme/repo/pull/1"}],"pageInfo":{"hasNextPage":true,"endCursor":"attachments-cursor-1"}}}}}

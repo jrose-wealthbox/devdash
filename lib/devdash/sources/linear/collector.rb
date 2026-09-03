@@ -56,8 +56,8 @@ module Devdash
             observations << observation("linear_issue_history", "#{issue.fetch("id")}:#{Digest::SHA256.hexdigest(Ingestion::CanonicalJson.dump(history))}",
               { "issue_id" => issue.fetch("id"), "history" => history }, issue["updatedAt"], now, "issue_history")
           end
-          cursor_after = next_cursor(cursor_before, issues.values, now)
           coverage_status = missing_active_ids.empty? ? "complete" : "partial"
+          cursor_after = coverage_status == "complete" ? next_cursor(cursor_before, issues.values, now) : cursor_before
           achieved_end_at = coverage_status == "complete" ? now : nil
           batch = Ingestion::Batch.new(source: "linear", scope_key: "global", cursor_type: "updated_at",
             cursor_before:, cursor_after:, observations:, page_count: issues.length, retry_count: 0,
