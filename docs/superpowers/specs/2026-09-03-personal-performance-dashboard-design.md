@@ -15,6 +15,8 @@ Devdash is a local Ruby application that incrementally collects engineering acti
 
 Version 1 includes GitHub activity, Linear work, Slack-derived cohort identity, SQLite persistence, and CLI reporting. Calendar and OpenAI/Anthropic usage are deferred, but the shared identity, source-record, collector-run, time-bucket, and metric-versioning primitives are designed so those sources can be added with additive migrations rather than a redesign.
 
+Persistence has three explicit layers: lossless fetched observations, normalized canonical entities/events, and disposable derived report data. Reporting changes operate on the canonical layer, while normalizer changes can replay the retained fetched observations without network access.
+
 The product will not calculate a composite performance score. Activity counts such as commits and changed lines are presented as context alongside flow metrics, not as direct measures of engineering value.
 
 ## Goals
@@ -49,9 +51,19 @@ The product will not calculate a composite performance score. Activity counts su
 
 Collectors preserve source observations, while normalized domain tables and metric queries interpret them. A changed metric definition should normally require a local recomputation, not an API backfill.
 
+### Preserve three rebuildable data layers
+
+1. **Fetched evidence:** append-only, content-addressed source observations containing exactly the fields returned by the configured API query, excluding transport headers and secrets.
+2. **Canonical data:** normalized people, identities, repositories, pull requests, reviews, commits, issues, links, and timestamped events at their natural source granularity.
+3. **Derived data:** metric values, comparison distributions, and rendered report snapshots keyed by their inputs and safe to delete at any time.
+
+Canonical tables are the normal reporting interface; reports do not query opaque JSON payloads. Fetched evidence remains available so a new canonical field or corrected normalizer can be replayed locally. Derived data never becomes the sole copy of a fact.
+
 ### Use domain tables, not a universal EAV schema
 
 Pull requests, reviews, commits, and Linear issues have distinct invariants and receive explicit tables. A generic `source_records` table preserves source payload versions and ingestion provenance. Future sources share foundational primitives but add their own domain tables.
+
+Canonical tables use stable primary/foreign keys and explicit join tables so person, repository, issue, review, and role facts are stored once rather than copied into metric rows. Denormalized values are permitted only in documented disposable caches or when preserving an immutable source observation. Frequently reported fields must be promoted to typed canonical columns before metrics depend on them.
 
 ### Model events and observations explicitly
 
@@ -239,6 +251,8 @@ The CLI exposes these user workflows:
 - `devdash sync SOURCE`: run one collector; the GitHub collector accepts `--repo SCOPE`, while Slack and Linear remain organization/workspace scoped.
 - `devdash backfill --days N [--repo SCOPE]`: explicitly extend historical coverage; repository scope limits GitHub work, while required global Linear/Slack coverage remains independently tracked.
 - `devdash report --window 7d|30d|180d [--repo SCOPE]`: render a terminal report using local data only; omission selects the default repository.
+- `devdash reprocess`: rebuild normalized canonical data and derived caches from retained source records without source requests.
+- `devdash rebuild-derived`: discard and recompute only metric/report caches from canonical data.
 - `devdash doctor`: validate credentials, source access, identity coverage, cursors, and data freshness without changing source systems.
 
 `report` never performs network access implicitly. A repeat report is therefore fast and cannot unexpectedly consume API quota.
@@ -274,6 +288,14 @@ Ingestion validates a complete batch, then uses one SQLite transaction to:
 5. advance the collector cursor.
 
 If any step fails, the cursor does not advance. Re-running the collector is safe.
+
+### Reprocessing
+
+Normalizers are deterministic and versioned. `devdash reprocess` reads retained `source_records` in source-time/observation order, rebuilds canonical tables and inferred events inside a transaction, then rebuilds derived data. A failed replay rolls back and leaves the previous canonical data usable.
+
+When a source exposes current snapshots but not a complete event log, reprocessing may derive a transition from consecutive source observations. Such events record `derivation: observed_diff` and nullable actor identity; they are never presented as authoritative source events.
+
+Reprocessing does not invoke transports. Adding a metric requires no normalization replay when its inputs already exist in canonical tables. Adding a newly normalized field requires replay but no refetch when the field is present in retained evidence.
 
 ### Identity and cohort resolution
 
@@ -362,6 +384,10 @@ Statuses are `running`, `succeeded`, `partial`, or `failed`. An interrupted `run
 
 Stores per-run coverage by repository/source scope and entity type. For example, GitHub PR coverage can succeed for `crm-web` while commit coverage for `repo1` fails. An `all` report is complete only when every included repository has sufficient coverage for every source entity required by the metric.
 
+#### `normalization_runs`
+
+Records normalizer version, source-record watermark, start/end timestamps, status, input/output counts, and sanitized failure details for initial ingestion and offline replay.
+
 #### `sync_cursors`
 
 Stores one opaque cursor per collector and scope, plus its last successful update. Cursor changes occur only inside the ingestion transaction.
@@ -375,14 +401,19 @@ Stores versioned raw observations with:
 - stable external ID;
 - source update timestamp;
 - observation timestamp;
+- collector run ID, API/schema version, query fingerprint, and normalizer version first applied;
 - canonical payload hash; and
 - JSON payload.
 
 The unique key `(source, scope_key, entity_type, external_id, payload_hash)` makes repeated identical fetches no-ops while preserving materially changed source versions and avoiding collisions when the same commit SHA exists in multiple repositories.
 
+Source records are immutable and retained indefinitely by default. Payload canonicalization makes hashes independent of JSON key order. Optional compression changes storage encoding, not payload identity. Normalized foreign keys never point from `source_records` into disposable derived tables, so canonical and derived layers can be rebuilt without endangering evidence.
+
 #### `metric_definitions` and `report_snapshots`
 
 `metric_definitions` records metric key, version, unit, description, signal role, measurement scope, and collection mode. `metric_framework_mappings` associates a metric version with zero or more framework dimensions without forcing one framework's taxonomy into another. `report_snapshots` optionally caches rendered/structured results using window, repository-scope hash, cohort-definition hash, metric versions, and source-watermark hash. Because reports are local and cheap, this cache is an optimization; source caching and idempotent ingestion provide the required network savings.
+
+`report_snapshots` and any future materialized metric tables have no independent retention guarantee. They can be dropped and rebuilt from canonical tables. Cache keys include every semantic input so changes to source watermarks, metric versions, repository scope, cohort definitions, or report format cannot reuse stale results.
 
 ### GitHub tables
 
@@ -551,6 +582,7 @@ GitHub cursors and retry state are repository-qualified so one repository's fail
 - Cursors advance only with a committed ingestion transaction.
 - A repeated report performs no source requests.
 - A repeated sync may fetch overlap data but produces no duplicate facts.
+- A canonical replay and derived-cache rebuild perform no source requests.
 
 ### Deletion and disappearance
 
@@ -568,6 +600,7 @@ Absence from a paginated response is not deletion evidence. Records are tombston
 - `all` reports identify each repository responsible for incomplete aggregate coverage.
 - Unresolved identities and repository mappings are counted and surfaced by `devdash doctor`.
 - Raw payload retention allows normalization bugs to be repaired locally.
+- Normalizer versions and replay watermarks make mixed-version canonical data detectable.
 
 ## Security and Privacy
 
@@ -577,6 +610,7 @@ Absence from a paginated response is not deletion evidence. Records are tombston
 - Logs redact tokens, authorization headers, emails when unnecessary, and response bodies on authentication failures.
 - The SQLite file and generated reports are ignored by Git and created with owner-only permissions where supported.
 - Slack is used only for identity and role evidence in Version 1; no messages are collected.
+- API queries request only fields needed for current or explicitly planned normalization. Raw evidence stores the complete returned payload, but never authorization headers, access tokens, or unrelated transport diagnostics.
 - Future Calendar collection stores only fields needed for time classification, not descriptions or meeting content.
 - Future survey responses remain local and are never included in named peer comparisons unless equivalent, consented cohort survey data exists.
 - Reports may contain named peers because the product is private, but no publishing or sharing mechanism is included.
@@ -593,6 +627,7 @@ Absence from a paginated response is not deletion evidence. Records are tombston
 - Metric role/scope/framework metadata and framework-coverage calculation.
 - Repository mapping priority, multi-repository handling, and unmapped totals.
 - Exclusion classification for generated, vendored, and lockfile paths.
+- Canonical normalizer determinism, payload canonicalization, and observed-diff event labeling.
 
 ### Collector contract tests
 
@@ -617,6 +652,8 @@ Every collector is tested against recorded, sanitized fixtures for:
 - Independent per-repository cursor advancement and partial `all` coverage.
 - Distinct cross-repository aggregation, including identical commit SHAs in different repositories.
 - Report-cache invalidation after data or metric-version changes.
+- Offline reconstruction of canonical tables and metrics from retained `source_records`, with transports replaced by fail-on-call fakes.
+- Transactional rollback when canonical reprocessing fails halfway through.
 
 ### Report tests
 
@@ -633,6 +670,7 @@ Opt-in smoke tests validate credentials and minimal read access for each source 
 - Ruby project foundation, configuration, Active Record, and SQLite migrations.
 - Multiple configured repositories, exactly one default, and explicit single/`all` repository scopes.
 - Collector/transport/ingestion contracts and provenance tables.
+- Lossless source evidence, versioned normalized canonical data, offline replay, and disposable derived caches.
 - Slack people/title collection and local identity overrides.
 - GitHub repository, PR, review, commit, and file-stat collection.
 - Linear issue/history collection and repository linking.
@@ -663,6 +701,10 @@ Opt-in smoke tests validate credentials and minimal read access for each source 
 ## Acceptance Criteria for Version 1
 
 - Running `devdash sync` twice against unchanged fixtures produces identical normalized rows and no duplicated events.
+- Retained source records preserve every field returned by configured source queries, are immutable/content-addressed, and contain no credentials or authorization headers.
+- Deleting all derived caches and rebuilding them produces the same metric results without calling a source transport.
+- Reprocessing retained source records reconstructs equivalent canonical rows and report results without network access; a failed replay preserves the previously usable canonical state.
+- Reporting queries canonical columns and relations rather than depending directly on raw payload JSON.
 - Configuration accepts multiple repositories, rejects zero/multiple defaults and reserved/duplicate aliases, and resolves omitted `--repo` to the default.
 - For reports, `--repo crm-web`, any other enabled configured alias/full name, and `--repo all` select the expected repository set.
 - A failed page or normalization step cannot advance a cursor or claim complete coverage.
