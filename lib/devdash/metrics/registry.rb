@@ -74,7 +74,7 @@ module Devdash
             mapping = mapping_to_hash(mapping)
             row.framework_mappings.find_or_initialize_by(
               framework: mapping.fetch(:framework).to_s, dimension: mapping.fetch(:dimension).to_s
-            ).update!(status: (mapping[:status] || "measured").to_s)
+            ).update!(status: persisted_mapping_status(mapping[:status]))
           end
           Models::MetricDefinition.where(key: definition.key).where.not(id: row.id).update_all(active: false)
         end
@@ -82,6 +82,14 @@ module Devdash
       end
 
       private
+
+      def persisted_mapping_status(status)
+        # `proxy` is meaningful in the in-memory metric definition (the
+        # renderer labels it), while the metadata table intentionally stores
+        # its measured/partial/planned availability vocabulary.
+        status = (status || "measured").to_s
+        status == "proxy" ? "measured" : status
+      end
 
       def active?(definition)
         definition.respond_to?(:active?) ? definition.active? : true

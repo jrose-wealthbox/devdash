@@ -14,9 +14,9 @@ require_relative "derived_rebuilder"
 module Devdash
   module Reprocessing
     class Reprocessor
-      def initialize(registry:, derived_rebuilder: DerivedRebuilder.new)
+      def initialize(registry:, derived_rebuilder: :default)
         @registry = registry
-        @derived_rebuilder = derived_rebuilder
+        @derived_rebuilder = derived_rebuilder == :default ? DerivedRebuilder.new : derived_rebuilder
       end
 
       def call
@@ -45,7 +45,7 @@ module Devdash
             end
             run.update!(input_count: records.length, output_count: records.length, status: "succeeded", finished_at: Time.now.utc)
           end
-          @derived_rebuilder.call
+          @derived_rebuilder&.call
         end
         runs
       rescue StandardError => error
