@@ -114,6 +114,9 @@ V1 collects only the provider facts needed for the documented GitHub, Linear, an
 
 ## Development
 
+Repository-specific coding and verification conventions are in
+[`AGENTS.md`](AGENTS.md).
+
 Run the suite with the repository’s pinned toolchain:
 
 ```sh
