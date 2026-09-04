@@ -48,6 +48,29 @@ RSpec.describe Devdash::SyncRunner do
     expect(slack.calls).to eq([{}])
   end
 
+  it "reports progress before and after each connector scope" do
+    progress = []
+    github = RecordingCollector.new
+    linear = RecordingCollector.new
+    slack = RecordingCollector.new
+
+    summary = described_class.new(configuration:, github_collector: github, linear_collector: linear,
+      slack_collector: slack, clock: -> { now }, progress: ->(message) { progress << message })
+      .call(source: "all", repository_selector: "crm-web")
+
+    expect(summary.exit_status).to eq(0)
+    expect(progress).to include(
+      "github/acme/crm-web: starting",
+      "github/acme/crm-web: finished",
+      "linear/global: starting",
+      "linear/global: finished",
+      "slack/workspace: starting",
+      "slack/workspace: finished"
+    )
+    expect(progress.index("github/acme/crm-web: starting")).to be < progress.index("github/acme/crm-web: finished")
+    expect(progress.index("linear/global: starting")).to be < progress.index("linear/global: finished")
+  end
+
   it "attempts remaining units after a repository failure and returns a failed summary" do
     github = RecordingCollector.new(failure: RuntimeError.new("repo unavailable"))
     linear = RecordingCollector.new
@@ -61,7 +84,13 @@ RSpec.describe Devdash::SyncRunner do
     expect(summary.succeeded.map(&:scope_key)).to eq(["global", "workspace"])
     expect(linear.calls).not_to be_empty
     expect(slack.calls).not_to be_empty
-    expect(summary.failed.first.error_message).to eq("repo unavailable")
+    expect(summary.failed.first.error_message).to eq("github/acme/crm-web: repo unavailable")
+  end
+
+  it "qualifies repository selector errors with the connector" do
+    expect do
+      described_class.new(configuration:).call(source: "all", repository_selector: "missing")
+    end.to raise_error(Devdash::ConfigurationError, /github: .*missing/)
   end
 
   it "uses the configured overlap after an existing source cursor" do

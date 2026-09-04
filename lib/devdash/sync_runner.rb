@@ -56,7 +56,7 @@ module Devdash
     def initialize(configuration:, github_collector: nil, linear_collector: nil, slack_collector: nil,
                    github_client: nil, linear_client: nil, slack_client: nil, http: nil,
                    clock: -> { Time.now.utc }, overlap_seconds: nil, initial_backfill_days: nil,
-                   safety_margin_days: nil, cursor_store: nil)
+                   safety_margin_days: nil, cursor_store: nil, progress: nil)
       @configuration = configuration
       @github_collector = github_collector
       @linear_collector = linear_collector
@@ -71,6 +71,7 @@ module Devdash
         DEFAULT_INITIAL_BACKFILL_DAYS].max
       @safety_margin_days = integer_setting(safety_margin_days, :safety_margin_days, DEFAULT_SAFETY_MARGIN_DAYS)
       @cursor_store = cursor_store
+      @progress = progress
       validate_settings!
     end
 
@@ -79,11 +80,11 @@ module Devdash
       selector = repository_selector || repo || scope
       validate_source!(source)
       if selector && %w[linear slack].include?(source)
-        raise Commands::UsageError, "--repo is only valid for GitHub or all-source sync"
+        raise Commands::UsageError, "#{source}: --repo is only valid for GitHub or all-source sync"
       end
 
       started_at = now
-      units = planned_units(source:, selector:)
+      units = planned_units_with_context(source:, selector:)
       results = units.map { |unit| run_unit(unit, requested_since: since, started_at:) }
       Summary.new(results:, started_at:, finished_at: now)
     end
@@ -117,13 +118,24 @@ module Devdash
 
     def run_unit(unit, requested_since:, started_at:)
       unit_started_at = now
+      report("#{unit.source}/#{unit.scope_key}: starting")
       value = collect(unit, requested_since: requested_since)
+      report("#{unit.source}/#{unit.scope_key}: finished")
       Unit.new(source: unit.source, scope_key: unit.scope_key, repository_names: unit.repository_names,
         status: "succeeded", started_at: unit_started_at, finished_at: now, value:, error_class: nil, error_message: nil)
     rescue StandardError => error
+      error_message = qualified_error_message(unit, error)
+      report("#{unit.source}/#{unit.scope_key}: failed: #{sanitized_message(error)}")
       Unit.new(source: unit.source, scope_key: unit.scope_key, repository_names: unit.repository_names,
         status: "failed", started_at: unit_started_at || started_at, finished_at: now, value: nil,
-        error_class: error.class.name, error_message: sanitized_message(error))
+        error_class: error.class.name, error_message: error_message)
+    end
+
+    def planned_units_with_context(source:, selector:)
+      planned_units(source:, selector:)
+    rescue StandardError => error
+      connector = source == "all" ? "github" : source
+      raise error.class, "#{connector}: #{sanitized_message(error)}", error.backtrace
     end
 
     def collect(unit, requested_since:)
@@ -175,11 +187,11 @@ module Devdash
 
       value = case name
       when :github
-        Sources::Github::Collector.new(client: @github_client || Sources::Github::Client.new)
+        Sources::Github::Collector.new(client: @github_client || Sources::Github::Client.new, progress: method(:report))
       when :linear
         Sources::Linear::Collector.new(client: @linear_client || Sources::Linear::Client.new(
           http: @http || Transports::HttpJson.new(base_uri: "https://api.linear.app")
-        ))
+        ), progress: method(:report))
       when :slack
         token = ENV.fetch("SLACK_TOKEN") { ENV.fetch("SLACK_API_TOKEN") { raise ConfigurationError, "SLACK_TOKEN is required" } }
         Sources::Slack::Collector.new(client: @slack_client || Sources::Slack::Client.new(
@@ -226,6 +238,14 @@ module Devdash
       Transports::Sanitizer.sanitize(error.message.to_s).slice(0, 500)
     rescue NameError
       error.message.to_s.gsub(/(token|authorization|api[_-]?key)\s*[:=]\s*\S+/i, '\\1=[redacted]').slice(0, 500)
+    end
+
+    def qualified_error_message(unit, error)
+      "#{unit.source}/#{unit.scope_key}: #{sanitized_message(error)}"
+    end
+
+    def report(message)
+      @progress&.call(message)
     end
   end
 end

@@ -19,6 +19,29 @@ RSpec.describe Devdash::Sources::Github::Collector do
     described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 2) }).call(repository_scope: scope, since: Time.utc(2026, 1, 1))
   end
 
+  it "reports progress while fetching a repository" do
+    client = instance_double(Devdash::Sources::Github::Client)
+    writer = instance_double(Devdash::Ingestion::Writer, call: true)
+    progress = []
+    allow(client).to receive(:repository).and_return({ "default_branch" => "main" })
+    allow(client).to receive(:updated_pull_numbers).and_return([])
+    allow(client).to receive(:open_pull_numbers).and_return([])
+    allow(client).to receive(:default_branch_commits).and_return([])
+    allow(client).to receive(:page_count).and_return(0)
+    scope = Devdash::RepositoryScope.new(key: "r", repository_names: ["o/r"], label: "r", configuration_hash: "x")
+
+    described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 2) }, progress: ->(message) { progress << message })
+      .call(repository_scope: scope, since: Time.utc(2026, 1, 1))
+
+    expect(progress).to include(
+      "github/o/r: fetching repository metadata",
+      "github/o/r: discovered 0 pull requests",
+      "github/o/r: fetching commits",
+      "github/o/r: discovered 0 commits",
+      "github/o/r: finished (0 pull requests, 0 commits)"
+    )
+  end
+
   it "uses each repository cursor with overlap and passes immutable scoped coverage" do
     client = instance_double(Devdash::Sources::Github::Client)
     writer = instance_double(Devdash::Ingestion::Writer)

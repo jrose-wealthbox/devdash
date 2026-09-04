@@ -17,15 +17,17 @@ module Devdash
       class Collector
         OVERLAP = 48 * 60 * 60
 
-        def initialize(client:, writer: Ingestion::Writer.new, clock: -> { Time.now.utc })
+        def initialize(client:, writer: Ingestion::Writer.new, clock: -> { Time.now.utc }, progress: nil)
           @client = client
           @writer = writer
           @clock = clock
+          @progress = progress
           Linear.register_normalizer!
         end
 
         def call(since:)
           now = @clock.call
+          report("linear/global: fetching issues")
           previous = Models::SyncCursor.find_by(source: "linear", scope_key: "global", cursor_type: "updated_at")
           cursor_before = previous&.cursor_value
           lower_bound = [since, (cursor_before && Time.iso8601(cursor_before) - OVERLAP)].compact.max
@@ -37,16 +39,23 @@ module Devdash
               id = issue.fetch("id")
               fetched_ids[id] = true
               issues[id] = issue
+              report("linear/global: fetched issue #{id} (#{issues.length})")
             end
           rescue Client::RelationHydrationError => error
             relation_hydration_failures << error
+            report("linear/global: relation hydration failed for #{error.issue_id}")
           end
+          report("linear/global: fetched #{issues.length} issues")
           missing_active_ids = []
-          Models::LinearIssue.where(active: true).pluck(:linear_id).each do |id|
+          active_ids = Models::LinearIssue.where(active: true).pluck(:linear_id)
+          report("linear/global: refreshing #{active_ids.length} active issues")
+          active_ids.each_with_index do |id, index|
+            report("linear/global: refreshing active issue #{id} (#{index + 1}/#{active_ids.length})")
             begin
               issue = @client.issue(id: id)
             rescue Client::RelationHydrationError => error
               relation_hydration_failures << error
+              report("linear/global: relation hydration failed for #{error.issue_id}")
               issue = nil
             end
             if issue
@@ -60,7 +69,8 @@ module Devdash
           end
 
           observations = []
-          issues.each_value do |issue|
+          issues.each_value.with_index do |issue, index|
+            report("linear/global: fetching history for #{issue.fetch("id")} (#{index + 1}/#{issues.length})")
             observations << observation("linear_issue", issue.fetch("id"), issue, issue["updatedAt"], now, "issues")
             history = @client.issue_history(id: issue.fetch("id"))
             observations << observation("linear_issue_history", "#{issue.fetch("id")}:#{Digest::SHA256.hexdigest(Ingestion::CanonicalJson.dump(history))}",
@@ -77,7 +87,10 @@ module Devdash
               { scope_type: "global", scope_key: "global", entity_type: "linear_issue_history", requested_start_at: lower_bound,
                 requested_end_at: now, achieved_start_at: lower_bound, achieved_end_at:, status: coverage_status }
             ])
-          @writer.call(batch)
+          report("linear/global: writing #{observations.length} observations")
+          run = @writer.call(batch)
+          report("linear/global: finished (#{issues.length} issues)")
+          run
         end
 
         private
@@ -97,6 +110,10 @@ module Devdash
           timestamps = [parse_time(cursor_before), successful_observation_boundary]
           timestamps.concat(issues.filter_map { |issue| parse_time(issue["updatedAt"]) })
           timestamps.compact.max.utc.iso8601
+        end
+
+        def report(message)
+          @progress&.call(message)
         end
       end
     end

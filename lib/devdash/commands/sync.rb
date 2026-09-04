@@ -26,28 +26,44 @@ module Devdash
         repository_selector ||= repo
         raise UsageError, "unknown source #{source.inspect}; expected github, linear, slack, or all" unless SOURCES.include?(source)
         if repository_selector && %w[linear slack].include?(source)
-          raise UsageError, "--repo is only valid for GitHub or all-source sync"
+          raise UsageError, "#{source}: --repo is only valid for GitHub or all-source sync"
         end
 
         prepare_database!
         Devdash.register_source_normalizers!
-        summary = (@sync_runner || SyncRunner.new(configuration: load_configuration,
+        runner = @sync_runner || SyncRunner.new(configuration: load_configuration,
           github_collector: @github_collector, linear_collector: @linear_collector, slack_collector: @slack_collector,
           github_client: @github_client, linear_client: @linear_client, slack_client: @slack_client, http: @http, clock:,
           overlap_seconds: load_configuration.respond_to?(:overlap_seconds) ? load_configuration.overlap_seconds : nil,
           initial_backfill_days: load_configuration.respond_to?(:initial_backfill_days) ? load_configuration.initial_backfill_days : nil,
-          safety_margin_days: load_configuration.respond_to?(:safety_margin_days) ? load_configuration.safety_margin_days : nil)).call(
-            source:, repository_selector:)
-        Reprocessing::Reprocessor.new(registry: Normalizers::Registry, derived_rebuilder: nil).call
-        resolve_identity_and_links
-        clear_report_cache!
-        summary.failed.each do |failure|
-          err.puts "Sync failed for #{failure.source}/#{failure.scope_key}: #{failure.error_message}"
+          safety_margin_days: load_configuration.respond_to?(:safety_margin_days) ? load_configuration.safety_margin_days : nil,
+          progress: ->(message) do
+            out.puts message
+            out.flush if out.respond_to?(:flush)
+          end)
+        summary = runner.call(source:, repository_selector:)
+        with_source_context(source) do
+          Reprocessing::Reprocessor.new(registry: Normalizers::Registry, derived_rebuilder: nil).call
+          resolve_identity_and_links
+          clear_report_cache!
         end
+        summary.failed.each do |failure|
+          err.puts "Sync failed: #{failure.error_message}"
+        end
+        out.puts "Sync complete: #{summary.succeeded.length} succeeded, #{summary.failed.length} failed"
         summary.exit_status
       end
 
       private
+
+      def with_source_context(source)
+        yield
+      rescue StandardError => error
+        context = source == "all" ? "sync" : source
+        message = normalize_source_failures(error)
+        message = "#{context}: #{message}" unless message.start_with?("#{context}:")
+        raise error.class, message, error.backtrace
+      end
 
       attr_reader :github_collector, :linear_collector, :slack_collector
 

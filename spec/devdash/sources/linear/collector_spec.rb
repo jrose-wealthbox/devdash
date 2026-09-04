@@ -18,6 +18,39 @@ RSpec.describe Devdash::Sources::Linear::Collector do
     expect(writer).to have_received(:call).with(having_attributes(source: "linear", scope_key: "global"))
   end
 
+  it "reports progress while fetching issues and history" do
+    client = instance_double(Devdash::Sources::Linear::Client)
+    writer = instance_double(Devdash::Ingestion::Writer, call: true)
+    progress = []
+    allow(client).to receive(:each_issue).and_yield({ "id" => "issue-1", "updatedAt" => "2026-01-02T00:00:00Z" })
+    allow(client).to receive(:issue_history).with(id: "issue-1").and_return([])
+
+    described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 3) }, progress: ->(message) { progress << message })
+      .call(since: Time.utc(2026, 1, 1))
+
+    expect(progress).to include(
+      "linear/global: fetching issues",
+      "linear/global: fetched issue issue-1 (1)",
+      "linear/global: fetching history for issue-1 (1/1)",
+      "linear/global: finished (1 issues)"
+    )
+  end
+
+  it "reports progress while refreshing active issues" do
+    Devdash::Models::LinearIssue.create!(linear_id: "active-1", identifier: "ENG-1", title: "Active issue", active: true)
+    client = instance_double(Devdash::Sources::Linear::Client)
+    writer = instance_double(Devdash::Ingestion::Writer, call: true)
+    progress = []
+    allow(client).to receive(:each_issue)
+    allow(client).to receive(:issue).with(id: "active-1").and_return({ "id" => "active-1", "updatedAt" => "2026-01-02T00:00:00Z" })
+    allow(client).to receive(:issue_history).with(id: "active-1").and_return([])
+
+    described_class.new(client:, writer:, clock: -> { Time.utc(2026, 1, 3) }, progress: ->(message) { progress << message })
+      .call(since: Time.utc(2026, 1, 1))
+
+    expect(progress).to include("linear/global: refreshing active issue active-1 (1/1)")
+  end
+
   it "does not claim history coverage for an active issue that was not fetched" do
     Devdash::Models::LinearIssue.create!(linear_id: "issue-1", identifier: "ENG-1", title: "Old issue", active: true)
     client = instance_double(Devdash::Sources::Linear::Client)

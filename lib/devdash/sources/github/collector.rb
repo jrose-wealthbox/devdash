@@ -27,8 +27,8 @@ module Devdash
         DEFAULT_OVERLAP = 48 * 3600
 
         def initialize(client: Client.new, writer: Devdash::Ingestion::Writer.new,
-                       clock: -> { Time.now.utc }, overlap: DEFAULT_OVERLAP)
-          @client, @writer, @clock, @overlap = client, writer, clock, overlap
+                       clock: -> { Time.now.utc }, overlap: DEFAULT_OVERLAP, progress: nil)
+          @client, @writer, @clock, @overlap, @progress = client, writer, clock, overlap, progress
         end
 
         def call(repository_scope:, since: nil)
@@ -42,16 +42,20 @@ module Devdash
 
         def collect_repository(name, requested_since)
           @client.reset_page_count! if @client.respond_to?(:reset_page_count!)
+          report("github/#{name}: fetching repository metadata")
           repository = @client.repository(name)
           observed_at = @clock.call.utc
           cursor = Models::SyncCursor.find_by(source: SOURCE, scope_key: name, cursor_type: CURSOR_TYPE)
           cursor_before = cursor&.cursor_value
           from = lower_bound(requested_since, cursor_before, observed_at)
 
+          report("github/#{name}: fetching pull requests")
           numbers = (@client.updated_pull_numbers(name, from:, to: observed_at) + @client.open_pull_numbers(name)).uniq.sort
+          report("github/#{name}: discovered #{numbers.length} pull requests")
           observations = [observation("repository", "github:#{name}:repository", repository, observed_at, source_time(repository["updated_at"]))]
 
-          numbers.each do |number|
+          numbers.each_with_index do |number, index|
+            report("github/#{name}: fetching pull request #{number} (#{index + 1}/#{numbers.length})")
             pull = @client.pull(name, number)
             pull_updated_at = source_time(pull["updated_at"])
             observations << observation("pull_request", "github:#{name}:pull:#{number}", pull, observed_at, pull_updated_at)
@@ -69,8 +73,14 @@ module Devdash
           end
 
           branch = repository["default_branch"] || "main"
-          @client.default_branch_commits(name, branch:, since: from).each do |summary|
+          report("github/#{name}: fetching commits")
+          commit_summaries = @client.default_branch_commits(name, branch:, since: from)
+          report("github/#{name}: discovered #{commit_summaries.length} commits")
+          commit_count = 0
+          commit_summaries.each_with_index do |summary, index|
+            commit_count += 1
             sha = summary.fetch("sha")
+            report("github/#{name}: fetching commit #{sha} (#{index + 1}/#{commit_summaries.length})")
             detail = @client.commit_detail(name, sha).merge("default_branch_reachable" => true)
             source_updated_at = source_time(detail.dig("commit", "committer", "date")) ||
               source_time(detail.dig("commit", "author", "date")) ||
@@ -78,13 +88,16 @@ module Devdash
             observations << observation("commit_files", "github:#{name}:commit:#{sha}", detail, observed_at, source_updated_at)
           end
 
+          report("github/#{name}: writing #{observations.length} observations")
           batch = Devdash::Ingestion::Batch.new(
             source: SOURCE, scope_key: name, cursor_type: CURSOR_TYPE,
             cursor_before:, cursor_after: next_cursor(cursor_before, observed_at),
             observations:, coverages: coverages(name, from, observed_at),
             page_count: page_count, retry_count: 0
           )
-          @writer.call(batch)
+          run = @writer.call(batch)
+          report("github/#{name}: finished (#{numbers.length} pull requests, #{commit_count} commits)")
+          run
         end
 
         def lower_bound(requested_since, cursor_before, observed_at)
@@ -133,6 +146,10 @@ module Devdash
           Time.iso8601(value.to_s).utc
         rescue ArgumentError, TypeError
           nil
+        end
+
+        def report(message)
+          @progress&.call(message)
         end
       end
     end
