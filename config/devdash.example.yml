@@ -1,5 +1,17 @@
 database_path: data/devdash.sqlite3
 
+# Collection is read-only against the providers.  These values bound the
+# amount of history requested by the first run and the overlap on later runs.
+sync:
+  overlap_seconds: 172800       # 48 hours; catches late edits without refetching all history
+  initial_backfill_days: 360    # minimum history needed for the longest dashboard window
+  safety_margin_days: 7         # additional boundary margin for clock/API skew
+  freshness_seconds: 172800     # doctor marks older successful coverage as stale
+  file_exclusions:
+    vendor: ["**/vendor/**", "vendor/**"]
+    generated: ["**/generated/**", "generated/**"]
+    lockfile: ["**/*.lock", "*.lock"]
+
 github:
   repositories:
     - name: starburstlabs/crm-web

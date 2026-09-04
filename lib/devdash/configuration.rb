@@ -7,7 +7,8 @@ module Devdash
   class Configuration
     Repository = Data.define(:name, :alias_name, :default, :enabled)
 
-    attr_reader :database_path, :repositories
+    attr_reader :database_path, :repositories, :overlap_seconds, :initial_backfill_days, :safety_margin_days,
+      :file_exclusions, :freshness_seconds
 
     def self.load(path: Devdash.root.join("config/devdash.yml"))
       raw = YAML.safe_load_file(path.to_s, permitted_classes: [], aliases: false)
@@ -35,6 +36,19 @@ module Devdash
       end
 
       @database_path = expand_path(raw.fetch("database_path", "data/devdash.sqlite3"))
+      sync = raw.fetch("sync", {})
+      unless sync.is_a?(Hash)
+        raise ConfigurationError, "sync configuration must be a mapping"
+      end
+      @overlap_seconds = positive_or_zero_integer(sync.fetch("overlap_seconds", 48 * 3600), "overlap_seconds")
+      @initial_backfill_days = positive_integer(sync.fetch("initial_backfill_days", 360), "initial_backfill_days")
+      @safety_margin_days = positive_or_zero_integer(sync.fetch("safety_margin_days", 7), "safety_margin_days")
+      exclusions = sync.fetch("file_exclusions", {})
+      unless exclusions.is_a?(Hash) && exclusions.all? { |category, patterns| !category.to_s.strip.empty? && Array(patterns).all? { |pattern| pattern.is_a?(String) && !pattern.strip.empty? } }
+        raise ConfigurationError, "file_exclusions must map categories to non-empty string patterns"
+      end
+      @file_exclusions = exclusions.transform_keys(&:to_s).transform_values { |patterns| Array(patterns).map(&:dup).freeze }.freeze
+      @freshness_seconds = positive_or_zero_integer(sync.fetch("freshness_seconds", 2 * 86_400), "freshness_seconds")
       @repositories = repository_items.each_with_index.map do |item, index|
         unless item.is_a?(Hash)
           raise ConfigurationError, "repository entry #{index + 1} must be a mapping"
@@ -90,7 +104,27 @@ module Devdash
 
     private
 
+    def positive_integer(value, name)
+      parsed = Integer(value)
+      raise ConfigurationError, "#{name} must be positive" unless parsed.positive?
+
+      parsed
+    rescue ArgumentError, TypeError
+      raise ConfigurationError, "#{name} must be an integer"
+    end
+
+    def positive_or_zero_integer(value, name)
+      parsed = Integer(value)
+      raise ConfigurationError, "#{name} must be non-negative" if parsed.negative?
+
+      parsed
+    rescue ArgumentError, TypeError
+      raise ConfigurationError, "#{name} must be an integer"
+    end
+
     def expand_path(value)
+      return Pathname(":memory:") if value.to_s == ":memory:"
+
       Pathname(value).absolute? ? Pathname(value) : Devdash.root.join(value)
     end
 

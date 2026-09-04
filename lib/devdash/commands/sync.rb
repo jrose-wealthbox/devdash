@@ -8,7 +8,7 @@ module Devdash
       def initialize(configuration: nil, out: $stdout, err: $stderr, database: Devdash::Database,
                      clock: -> { Time.now.utc }, github_collector: nil, linear_collector: nil,
                      slack_collector: nil, github_client: nil, linear_client: nil, slack_client: nil, http: nil,
-                     cache: nil)
+                     cache: nil, sync_runner: nil)
         super(configuration:, out:, err:, database:, clock:)
         @github_collector = github_collector
         @linear_collector = linear_collector
@@ -18,6 +18,7 @@ module Devdash
         @slack_client = slack_client
         @http = http
         @cache = cache
+        @sync_runner = sync_runner
       end
 
       def call(source: "all", repository_selector: nil, repo: nil)
@@ -30,19 +31,20 @@ module Devdash
 
         prepare_database!
         Devdash.register_source_normalizers!
-        scope = repository_scope(repository_selector)
-        selected = source == "all" ? SOURCES - ["all"] : [source]
-        selected.each do |item|
-          case item
-          when "github" then github_collector.call(repository_scope: scope)
-          when "linear" then linear_collector.call(since: clock.call.utc - (7 * 86_400))
-          when "slack" then slack_collector.call
-          end
-        end
+        summary = (@sync_runner || SyncRunner.new(configuration: load_configuration,
+          github_collector: @github_collector, linear_collector: @linear_collector, slack_collector: @slack_collector,
+          github_client: @github_client, linear_client: @linear_client, slack_client: @slack_client, http: @http, clock:,
+          overlap_seconds: load_configuration.respond_to?(:overlap_seconds) ? load_configuration.overlap_seconds : nil,
+          initial_backfill_days: load_configuration.respond_to?(:initial_backfill_days) ? load_configuration.initial_backfill_days : nil,
+          safety_margin_days: load_configuration.respond_to?(:safety_margin_days) ? load_configuration.safety_margin_days : nil)).call(
+            source:, repository_selector:)
         Reprocessing::Reprocessor.new(registry: Normalizers::Registry, derived_rebuilder: nil).call
         resolve_identity_and_links
         clear_report_cache!
-        0
+        summary.failed.each do |failure|
+          err.puts "Sync failed for #{failure.source}/#{failure.scope_key}: #{failure.error_message}"
+        end
+        summary.exit_status
       end
 
       private
