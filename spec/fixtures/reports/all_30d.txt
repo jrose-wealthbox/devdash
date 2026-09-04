@@ -1,0 +1,8 @@
+Personal Engineering Dashboard · 30d · All configured repos (3)
+Current: 2026-08-04 00:00Z → 2026-09-03 00:00Z
+Previous: 2026-07-05 00:00Z → 2026-08-04 00:00Z
+
+REPOSITORY BREAKDOWN
+  starburstlabs/crm-web
+  starburstlabs/repo1
+  starburstlabs/repo2
