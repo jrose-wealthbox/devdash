@@ -4,7 +4,7 @@ require "optparse"
 
 module Devdash
   class CLI
-    COMMANDS = %w[sync backfill report reprocess rebuild-derived].freeze
+    COMMANDS = %w[sync backfill report reprocess rebuild-derived doctor].freeze
 
     class << self
       def start(argv, out: $stdout, err: $stderr, command_factory: nil)
@@ -36,6 +36,7 @@ module Devdash
             report --window 7d|30d|180d [--repo SCOPE] [--at ISO8601]
             reprocess
             rebuild-derived
+            doctor [--offline]
         TEXT
       end
 
@@ -48,6 +49,7 @@ module Devdash
         when "report" then parse_report(factory, argv, out:, err:)
         when "reprocess" then parse_offline(factory, command, argv, out:, err:)
         when "rebuild-derived" then parse_offline(factory, command, argv, out:, err:)
+        when "doctor" then parse_doctor(factory, argv, out:, err:)
         end
       end
 
@@ -55,7 +57,12 @@ module Devdash
         options = { source: "all" }
         parser = OptionParser.new do |opts|
           opts.banner = "Usage: devdash sync [github|linear|slack|all] [--repo SCOPE]"
+          opts.on("-h", "--help", "show this help") { }
           opts.on("--repo SCOPE", "repository alias, owner/name, or all") { |value| options[:repository_selector] = value }
+        end
+        if argv.any? { |argument| %w[-h --help].include?(argument) }
+          out.puts parser
+          return 0
         end
         parser.parse!(argv)
         options[:source] = argv.shift || "all"
@@ -67,8 +74,13 @@ module Devdash
         options = {}
         parser = OptionParser.new do |opts|
           opts.banner = "Usage: devdash backfill --days N [--repo SCOPE]"
+          opts.on("-h", "--help", "show this help") { }
           opts.on("--days N", Integer, "number of days") { |value| options[:days] = value }
           opts.on("--repo SCOPE", "repository alias, owner/name, or all") { |value| options[:repository_selector] = value }
+        end
+        if argv.any? { |argument| %w[-h --help].include?(argument) }
+          out.puts parser
+          return 0
         end
         parser.parse!(argv)
         raise Commands::UsageError, "--days is required" unless options.key?(:days)
@@ -80,9 +92,14 @@ module Devdash
         options = { window: "7d" }
         parser = OptionParser.new do |opts|
           opts.banner = "Usage: devdash report --window 7d|30d|180d [--repo SCOPE] [--at ISO8601]"
+          opts.on("-h", "--help", "show this help") { }
           opts.on("--window WINDOW", "7d, 30d, or 180d") { |value| options[:window] = value }
           opts.on("--repo SCOPE", "repository alias, owner/name, or all") { |value| options[:repository_selector] = value }
           opts.on("--at ISO8601", "report end timestamp") { |value| options[:at] = value }
+        end
+        if argv.any? { |argument| %w[-h --help].include?(argument) }
+          out.puts parser
+          return 0
         end
         parser.parse!(argv)
         raise Commands::UsageError, "extra arguments: #{argv.join(" ")}" unless argv.empty?
@@ -94,13 +111,30 @@ module Devdash
         factory.call(command, { out:, err: })
       end
 
+      def parse_doctor(factory, argv, out:, err:)
+        options = { offline: false }
+        parser = OptionParser.new do |opts|
+          opts.banner = "Usage: devdash doctor [--offline]"
+          opts.on("-h", "--help", "show this help") { }
+          opts.on("--offline", "skip GitHub, Linear, and Slack access probes") { options[:offline] = true }
+        end
+        if argv.any? { |argument| %w[-h --help].include?(argument) }
+          out.puts parser
+          return 0
+        end
+        parser.parse!(argv)
+        raise Commands::UsageError, "extra arguments: #{argv.join(" ")}" unless argv.empty?
+        factory.call("doctor", options.merge(out:, err:))
+      end
+
       def default_command(command, options)
         klass = {
           "sync" => Commands::Sync,
           "backfill" => Commands::Backfill,
           "report" => Commands::Report,
           "reprocess" => Commands::Reprocess,
-          "rebuild-derived" => Commands::RebuildDerived
+          "rebuild-derived" => Commands::RebuildDerived,
+          "doctor" => Commands::Doctor
         }.fetch(command)
         object_options = options.dup
         out = object_options.delete(:out) || $stdout

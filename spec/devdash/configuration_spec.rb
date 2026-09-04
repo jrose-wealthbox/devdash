@@ -122,4 +122,16 @@ RSpec.describe Devdash::Configuration do
         .to raise_error(Devdash::ConfigurationError, /enabled must be a boolean/)
     end
   end
+
+  it "loads conservative sync defaults and validates configured exclusions" do
+    Dir.mktmpdir do |directory|
+      config = described_class.load(path: write_config(directory, valid_yaml))
+      expect(config).to have_attributes(overlap_seconds: 172800, initial_backfill_days: 360,
+        safety_margin_days: 7, freshness_seconds: 172800, file_exclusions: {})
+
+      malformed = valid_yaml.sub("github:", "sync:\n  file_exclusions: bad\ngithub:")
+      expect { described_class.load(path: write_config(directory, malformed)) }
+        .to raise_error(Devdash::ConfigurationError, /file_exclusions/)
+    end
+  end
 end
